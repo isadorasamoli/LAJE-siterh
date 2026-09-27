@@ -39,7 +39,7 @@ export default function AuditLogs({ currentUserEmail }: AuditLogsProps) {
   const [isDeleting, setIsDeleting] = useState(false);
 
   const activeEmail = (currentUserEmail || auth.currentUser?.email || '').toLowerCase().trim();
-  const canDeleteLogs = activeEmail === 'isadora.mlima@ufpe.br' || activeEmail === 'isadorasdml@gmail.com';
+  const canDeleteLogs = activeEmail === 'isadora.mlima@ufpe.br';
 
   const fetchLogs = async () => {
     try {

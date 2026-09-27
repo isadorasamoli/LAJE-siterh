@@ -15,7 +15,7 @@ export default function AdminSettings() {
   const [loading, setLoading] = useState(true);
   const [newEmail, setNewEmail] = useState('');
 
-  const hardcodedAdmins = ['isadora.mlima@ufpe.br', 'isadorasdml@gmail.com'];
+  const hardcodedAdmins = ['isadora.mlima@ufpe.br'];
 
   const fetchAdmins = async () => {
     try {

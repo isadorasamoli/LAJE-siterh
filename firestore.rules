@@ -12,7 +12,7 @@ service cloud.firestore {
     
     function isAdmin() {
       return isSignedIn() && (
-        (request.auth.token.email != null && (request.auth.token.email.lower() == 'isadora.mlima@ufpe.br' || request.auth.token.email.lower() == 'isadorasdml@gmail.com')) || 
+        (request.auth.token.email != null && (request.auth.token.email.lower() == 'isadora.mlima@ufpe.br')) || 
         (request.auth.token.email != null && (exists(/databases/$(database)/documents/admins/$(request.auth.token.email)) || exists(/databases/$(database)/documents/admins/$(request.auth.token.email.lower()))))
       );
     }
@@ -197,7 +197,7 @@ service cloud.firestore {
         && isValidId(logId)
         && isValidAuditLog(incoming());
       allow update: if false;
-      allow delete: if isSignedIn() && request.auth.token.email != null && (request.auth.token.email.lower() == 'isadora.mlima@ufpe.br' || request.auth.token.email.lower() == 'isadorasdml@gmail.com');
+      allow delete: if isSignedIn() && request.auth.token.email != null && request.auth.token.email.lower() == 'isadora.mlima@ufpe.br';
     }
 
     match /projects/{projectId} {
