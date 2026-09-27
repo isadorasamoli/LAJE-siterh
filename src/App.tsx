@@ -11,7 +11,7 @@ import CalendarTab from './components/CalendarTab';
 import AdminSettings from './components/AdminSettings';
 import AuditLogs from './components/AuditLogs';
 import ProjectsHub from './components/ProjectsHub';
-import { Toaster, toast } from 'react-hot-toast';
+import { toast } from 'react-hot-toast';
 
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
@@ -36,7 +36,7 @@ export default function App() {
       try {
         let adminStatus = false;
         const userEmail = currentUser.email?.toLowerCase().trim() || '';
-        if (userEmail === 'isadorasdml@gmail.com' || userEmail === 'isadora.mlima@ufpe.br') {
+        if (userEmail === 'isadora.mlima@ufpe.br') {
           adminStatus = true;
         } else {
           const adminDoc = await getDoc(doc(db, 'admins', userEmail));
@@ -124,7 +124,7 @@ export default function App() {
         setNeedsAuth(false);
         const userEmail = result.user.email?.toLowerCase().trim() || '';
         let adminStatus = false;
-        if (userEmail === 'isadorasdml@gmail.com' || userEmail === 'isadora.mlima@ufpe.br') {
+        if (userEmail === 'isadora.mlima@ufpe.br') {
           adminStatus = true;
         } else {
           const adminDoc = await getDoc(doc(db, 'admins', userEmail));
@@ -149,7 +149,6 @@ export default function App() {
   if (needsAuth) {
     return (
       <div className="min-h-screen bg-[var(--color-bg-dark)] flex items-center justify-center text-[var(--color-ink)] font-sans">
-        <Toaster position="top-right" />
         <div className="w-full max-w-md p-8 border border-[var(--color-ink-faint)] bg-[rgba(255,255,255,0.02)] transition-colors">
           <div className="flex flex-col items-center text-center space-y-6">
             <div className="w-20 h-20 flex items-center justify-center">
@@ -193,7 +192,6 @@ export default function App() {
 
   return (
     <div className="h-screen w-full overflow-hidden grid grid-cols-1 md:grid-cols-[240px_1fr] grid-rows-[auto_1fr] bg-[var(--color-bg-dark)] text-[var(--color-ink)]">
-      <Toaster position="top-right" />
       <header className="col-span-full px-8 py-4 border-b border-[var(--color-ink-faint)] flex justify-between items-center bg-[rgba(12,12,14,0.8)] backdrop-blur-md z-[100]">
         <div className="flex items-center gap-3">
           <div className="w-9 h-9 flex items-center justify-center">
@@ -376,7 +374,7 @@ export default function App() {
           )}
           {activeTab === 'dashboard' && isAdmin && <Dashboard onNavigateTab={setActiveTab} />}
           {activeTab === 'calendar' && <CalendarTab isAdmin={isAdmin} token={token || ''} />}
-          {activeTab === 'logs' && isAdmin && <AuditLogs />}
+          {activeTab === 'logs' && isAdmin && <AuditLogs currentUserEmail={user?.email || ''} />}
           {activeTab === 'settings' && isAdmin && <AdminSettings />}
         </div>
       </main>

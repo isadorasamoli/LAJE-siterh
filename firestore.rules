@@ -7,13 +7,12 @@ service cloud.firestore {
     }
     // 2. Global Helpers
     function isSignedIn() {
-      return request.auth != null && request.auth.token.email_verified == true;
+      return request.auth != null;
     }
     
     function isAdmin() {
       return isSignedIn() && (
-        (request.auth.token.email != null && request.auth.token.email.lower() == 'isadorasdml@gmail.com') || 
-        (request.auth.token.email != null && request.auth.token.email.lower() == 'isadora.mlima@ufpe.br') || 
+        (request.auth.token.email != null && (request.auth.token.email.lower() == 'isadora.mlima@ufpe.br' || request.auth.token.email.lower() == 'isadorasdml@gmail.com')) || 
         (request.auth.token.email != null && (exists(/databases/$(database)/documents/admins/$(request.auth.token.email)) || exists(/databases/$(database)/documents/admins/$(request.auth.token.email.lower()))))
       );
     }
@@ -32,7 +31,7 @@ service cloud.firestore {
 
     // 3. Validation Blueprint for Response
     function isValidResponse(data) {
-      return data.keys().hasAll(['userId', 'email', 'name', 'course', 'leagueRole', 'priority', 'createdAt', 'status'])
+      return data.keys().hasAll(['userId', 'email', 'name', 'course', 'leagueRole', 'status'])
         && data.userId is string
         && data.email is string && data.email.size() <= 255
         && data.name is string && data.name.size() <= 255
@@ -44,14 +43,14 @@ service cloud.firestore {
         && (!data.keys().hasAny(['leagueFocus']) || data.leagueFocus is number)
         && (!data.keys().hasAny(['weeklyHours']) || (data.weeklyHours is string && data.weeklyHours.size() <= 200))
         && (!data.keys().hasAny(['roleFocus']) || (data.roleFocus is string && data.roleFocus.size() <= 2000))
-        && data.learningFocus is string && data.learningFocus.size() <= 2000
-        && data.currentProjects is string && data.currentProjects.size() <= 1000
-        && data.interestedProjects is string && data.interestedProjects.size() <= 1000
-        && data.priority is string && data.priority.size() <= 50
+        && (!data.keys().hasAny(['learningFocus']) || (data.learningFocus is string && data.learningFocus.size() <= 2000))
+        && (!data.keys().hasAny(['currentProjects']) || (data.currentProjects is string && data.currentProjects.size() <= 1000))
+        && (!data.keys().hasAny(['interestedProjects']) || (data.interestedProjects is string && data.interestedProjects.size() <= 1000))
+        && (!data.keys().hasAny(['priority']) || (data.priority is string && data.priority.size() <= 50))
         && (!data.keys().hasAny(['progress']) || data.progress is number)
-        && data.deadline is string && data.deadline.size() <= 50
+        && (!data.keys().hasAny(['deadline']) || (data.deadline is string && data.deadline.size() <= 50))
         && (!data.keys().hasAny(['notifications']) || data.notifications is bool)
-        && data.createdAt is number
+        && (!data.keys().hasAny(['createdAt']) || data.createdAt is number)
         && data.status in ['Ativo', 'Ex-membro']
         && (!data.keys().hasAny(['deletionReason']) || (data.deletionReason is string && data.deletionReason.size() <= 2000))
         && (!data.keys().hasAny(['discordUser']) || (data.discordUser is string && data.discordUser.size() <= 100))
@@ -155,9 +154,7 @@ service cloud.firestore {
         && isValidResponse(incoming())
         && (
            (isAdmin()) ||
-           (existing().userId == request.auth.uid && incoming().diff(existing()).affectedKeys().hasOnly(['progress', 'currentProjects'])) ||
-           (existing().userId == request.auth.uid && incoming().diff(existing()).affectedKeys().hasOnly(['editRequestStatus'])) ||
-           (existing().userId == request.auth.uid && existing().editAuthorized == true)
+           (existing().userId == request.auth.uid)
         );
         
       allow delete: if isAdmin();
@@ -199,7 +196,8 @@ service cloud.firestore {
       allow create: if isSignedIn()
         && isValidId(logId)
         && isValidAuditLog(incoming());
-      allow update, delete: if false;
+      allow update: if false;
+      allow delete: if isSignedIn() && request.auth.token.email != null && (request.auth.token.email.lower() == 'isadora.mlima@ufpe.br' || request.auth.token.email.lower() == 'isadorasdml@gmail.com');
     }
 
     match /projects/{projectId} {

@@ -123,6 +123,7 @@ export default function ProjectsHub({
   const [isSubmittingTask, setIsSubmittingTask] = useState(false);
 
   const [projectSearch, setProjectSearch] = useState('');
+  const [projectStatusFilter, setProjectStatusFilter] = useState('all');
   const [taskAreaFilter, setTaskAreaFilter] = useState('all');
   const [taskOnlyBeginners, setTaskOnlyBeginners] = useState(false);
   const [openingProjectFilter, setOpeningProjectFilter] = useState('all');
@@ -480,14 +481,38 @@ export default function ProjectsHub({
   };
 
   const filteredProjects = useMemo(() => {
-    return projects.filter(p => 
-      !projectSearch.trim() ||
-      p.name.toLowerCase().includes(projectSearch.toLowerCase()) ||
-      p.genre.toLowerCase().includes(projectSearch.toLowerCase()) ||
-      p.engine.toLowerCase().includes(projectSearch.toLowerCase()) ||
-      p.leader.toLowerCase().includes(projectSearch.toLowerCase())
-    );
-  }, [projects, projectSearch]);
+    return projects.filter(p => {
+      if (projectStatusFilter !== 'all') {
+        const s = (p.status || '').toLowerCase().trim();
+        if (projectStatusFilter === 'em andamento') {
+          if (!['em andamento', 'andamento', 'em produção', 'em producao', 'desenvolvimento'].includes(s)) return false;
+        } else if (projectStatusFilter === 'concluído') {
+          if (!['concluído', 'concluido', 'finalizado'].includes(s)) return false;
+        } else if (projectStatusFilter === 'pausado') {
+          if (!['pausado', 'em espera'].includes(s)) return false;
+        } else if (projectStatusFilter === 'aprovado') {
+          if (!['aprovado', 'aprovado com escopo menor'].includes(s)) return false;
+        } else if (projectStatusFilter === 'em análise') {
+          if (!['em análise', 'em analise', 'análise'].includes(s)) return false;
+        } else if (projectStatusFilter === 'ideia') {
+          if (!['ideia', 'conceito'].includes(s)) return false;
+        } else if (s !== projectStatusFilter) {
+          return false;
+        }
+      }
+
+      if (!projectSearch.trim()) return true;
+
+      const q = projectSearch.toLowerCase();
+      return (
+        p.name.toLowerCase().includes(q) ||
+        p.genre.toLowerCase().includes(q) ||
+        p.engine.toLowerCase().includes(q) ||
+        p.leader.toLowerCase().includes(q) ||
+        (p.status && p.status.toLowerCase().includes(q))
+      );
+    });
+  }, [projects, projectSearch, projectStatusFilter]);
 
   const filteredTasks = useMemo(() => {
     return tasks.filter(t => {
@@ -654,18 +679,80 @@ export default function ProjectsHub({
   };
 
   const getStatusBadge = (status: string) => {
-    switch (status) {
+    const s = (status || '').toLowerCase().trim();
+    switch (s) {
+      case 'em andamento':
+      case 'andamento':
+      case 'desenvolvimento':
+        return (
+          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-bold font-['Space_Mono'] bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 shadow-[0_0_12px_rgba(16,185,129,0.15)]">
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse shrink-0" />
+            Em Andamento
+          </span>
+        );
       case 'em produção':
-        return <span className="px-2.5 py-0.5 text-xs font-bold font-['Space_Mono'] bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">Em Produção</span>;
+      case 'em producao':
+        return (
+          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-bold font-['Space_Mono'] bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 shadow-[0_0_12px_rgba(16,185,129,0.15)]">
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse shrink-0" />
+            Em Produção
+          </span>
+        );
+      case 'concluído':
+      case 'concluido':
+      case 'finalizado':
+        return (
+          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-bold font-['Space_Mono'] bg-cyan-500/15 text-cyan-300 border border-cyan-500/30 shadow-[0_0_12px_rgba(6,182,212,0.15)]">
+            <CheckCircle2 size={12} className="text-cyan-400 shrink-0" />
+            Concluído
+          </span>
+        );
+      case 'pausado':
+      case 'em espera':
+        return (
+          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-bold font-['Space_Mono'] bg-amber-500/15 text-amber-300 border border-amber-500/30 shadow-[0_0_12px_rgba(245,158,11,0.15)]">
+            <Clock size={12} className="text-amber-400 shrink-0" />
+            Pausado
+          </span>
+        );
       case 'aprovado':
       case 'aprovado com escopo menor':
-        return <span className="px-2.5 py-0.5 text-xs font-bold font-['Space_Mono'] bg-blue-500/20 text-blue-400 border border-blue-500/30">Aprovado</span>;
-      case 'pausado':
-        return <span className="px-2.5 py-0.5 text-xs font-bold font-['Space_Mono'] bg-yellow-500/20 text-yellow-400 border border-yellow-500/30">Pausado</span>;
-      case 'concluído':
-        return <span className="px-2.5 py-0.5 text-xs font-bold font-['Space_Mono'] bg-purple-500/20 text-purple-400 border border-purple-500/30">Concluído</span>;
+        return (
+          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-bold font-['Space_Mono'] bg-teal-500/15 text-teal-300 border border-teal-500/30 shadow-[0_0_12px_rgba(20,184,166,0.15)]">
+            <Check size={12} className="text-teal-400 shrink-0" />
+            Aprovado
+          </span>
+        );
+      case 'em análise':
+      case 'em analise':
+      case 'análise':
+        return (
+          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-bold font-['Space_Mono'] bg-violet-500/15 text-violet-300 border border-violet-500/30 shadow-[0_0_12px_rgba(139,92,246,0.15)]">
+            <Sparkles size={12} className="text-violet-400 shrink-0" />
+            Em Análise
+          </span>
+        );
+      case 'ideia':
+      case 'conceito':
+        return (
+          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-bold font-['Space_Mono'] bg-fuchsia-500/15 text-fuchsia-300 border border-fuchsia-500/30 shadow-[0_0_12px_rgba(217,70,239,0.15)]">
+            <Lightbulb size={12} className="text-fuchsia-400 shrink-0" />
+            Ideia
+          </span>
+        );
+      case 'cancelado':
+        return (
+          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-bold font-['Space_Mono'] bg-rose-500/15 text-rose-300 border border-rose-500/30 shadow-[0_0_12px_rgba(244,63,94,0.15)]">
+            <AlertTriangle size={12} className="text-rose-400 shrink-0" />
+            Cancelado
+          </span>
+        );
       default:
-        return <span className="px-2.5 py-0.5 text-xs font-bold font-['Space_Mono'] bg-gray-800 text-gray-300 border border-gray-700">{status}</span>;
+        return (
+          <span className="inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-bold font-['Space_Mono'] bg-gray-800 text-gray-300 border border-gray-700 capitalize">
+            {status}
+          </span>
+        );
     }
   };
 
@@ -740,20 +827,40 @@ export default function ProjectsHub({
 
       {activeSubTab === 'projetos' && (
         <div className="space-y-6">
-          <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-4 p-4 bg-[rgba(255,255,255,0.02)] border border-[var(--color-ink-faint)]">
-            <div className="relative flex-1 max-w-md">
-              <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-500" size={16} />
-              <input
-                type="text"
-                placeholder="BUSCAR POR JOGO, ENGINE, GÊNERO OU LÍDER..."
-                value={projectSearch}
-                onChange={e => setProjectSearch(e.target.value)}
-                className="w-full bg-transparent border border-[var(--color-ink-faint)] py-2 pl-10 pr-3 text-xs text-white font-['Space_Mono'] uppercase outline-none focus:border-[var(--color-accent)]"
-              />
+          <div className="flex flex-col md:flex-row items-stretch md:items-center justify-between gap-4 p-4 bg-[rgba(255,255,255,0.02)] border border-[var(--color-ink-faint)]">
+            <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 flex-1">
+              <div className="relative flex-1">
+                <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-500" size={16} />
+                <input
+                  type="text"
+                  placeholder="BUSCAR POR JOGO, ENGINE, GÊNERO OU LÍDER..."
+                  value={projectSearch}
+                  onChange={e => setProjectSearch(e.target.value)}
+                  className="w-full bg-transparent border border-[var(--color-ink-faint)] py-2 pl-10 pr-3 text-xs text-white font-['Space_Mono'] uppercase outline-none focus:border-[var(--color-accent)]"
+                />
+              </div>
+
+              <div className="flex items-center gap-2">
+                <Filter size={14} className="text-gray-500 shrink-0 hidden sm:inline" />
+                <select
+                  value={projectStatusFilter}
+                  onChange={e => setProjectStatusFilter(e.target.value)}
+                  className="w-full sm:w-auto bg-[#161619] border border-[var(--color-ink-faint)] py-2 px-3 text-xs text-gray-300 font-['Space_Mono'] outline-none cursor-pointer focus:border-[var(--color-accent)]"
+                >
+                  <option value="all">Todos os Status</option>
+                  <option value="em andamento">Em Andamento</option>
+                  <option value="concluído">Concluído</option>
+                  <option value="pausado">Pausado</option>
+                  <option value="aprovado">Aprovado</option>
+                  <option value="em análise">Em Análise</option>
+                  <option value="ideia">Ideia</option>
+                </select>
+              </div>
             </div>
-            <div className="flex items-center gap-3">
+
+            <div className="flex items-center justify-between sm:justify-end gap-3">
               <span className="text-xs font-['Space_Mono'] text-gray-400">
-                {projects.length} {projects.length === 1 ? 'projeto ativo' : 'projetos ativos'}
+                {filteredProjects.length} {filteredProjects.length === 1 ? 'projeto' : 'projetos'}
               </span>
               {isAdmin && (
                 <div className="flex items-center gap-2">
@@ -814,7 +921,7 @@ export default function ProjectsHub({
                       <div className="w-12 h-12 rounded-lg bg-gray-800/80 border border-gray-700 flex items-center justify-center text-2xl shadow-inner shrink-0 group-hover:scale-105 transition-transform">
                         {proj.coverEmoji || '🎮'}
                       </div>
-                      <div className="text-right">
+                      <div className="text-right flex flex-col items-end shrink-0">
                         {getStatusBadge(proj.status)}
                         <span className="block text-[10px] text-gray-500 font-['Space_Mono'] mt-1">
                           {proj.semester || '2026.2'}
@@ -878,9 +985,8 @@ export default function ProjectsHub({
                   <h4 className="text-sm font-bold text-white font-['Syne']">
                     Invertendo o Sentido do Convite
                   </h4>
-                  <p className="text-xs text-gray-300 mt-1 max-w-2xl leading-relaxed">
-                    Aqui você encontra trabalho concreto com demandas claras.
-                    A diretoria e os líderes cruzam as vagas com o formulário de membros para enviar convites diretos.
+                  <p className="text-xs text-gray-300 mt-1 max-w-xl leading-relaxed">
+                    Vagas abertas com demandas claras. Os líderes usam seu formulário para convidar você diretamente.
                   </p>
                 </div>
               </div>
@@ -1179,8 +1285,8 @@ export default function ProjectsHub({
                 <h4 className="text-sm font-bold text-white font-['Syne']">
                   Duas Etapas em Vez de Uma: Proposta Leve (10 min)
                 </h4>
-                <p className="text-xs text-gray-300 mt-1 max-w-3xl leading-relaxed">
-                  Não exigimos um documento longo de 40 páginas antes do projeto existir. Você responde 9 perguntas simples para a diretoria entender a ideia e ver como apoiar. O GDD completo só é montado para projetos aprovados!
+                <p className="text-xs text-gray-300 mt-1 leading-relaxed whitespace-nowrap overflow-x-auto">
+                  Sem burocracia: responda 9 perguntas simples para avaliarmos sua ideia. O GDD completo só é montado após a aprovação.
                 </p>
               </div>
             </div>
@@ -1213,9 +1319,9 @@ export default function ProjectsHub({
                 <input
                   type="text"
                   required
-                  placeholder="@usuario_discord"
+                  placeholder="usuario_discord"
                   value={proposalForm.proposerDiscord}
-                  onChange={e => setProposalForm({ ...proposalForm, proposerDiscord: e.target.value })}
+                  onChange={e => setProposalForm({ ...proposalForm, proposerDiscord: e.target.value.replace(/^@/, '') })}
                   className="w-full bg-[#161619] border border-[var(--color-ink-faint)] p-2.5 text-xs text-white outline-none focus:border-[var(--color-accent)] font-['Space_Mono']"
                 />
               </div>
@@ -1408,13 +1514,44 @@ export default function ProjectsHub({
               <div className="flex items-center gap-3">
                 <span className="text-3xl">{selectedProject.coverEmoji || '🎮'}</span>
                 <div>
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2 flex-wrap">
                     <h3 className="text-xl font-bold text-white font-['Syne']">{selectedProject.name}</h3>
                     {getStatusBadge(selectedProject.status)}
                   </div>
                   <p className="text-xs text-amber-400 font-['Space_Mono'] mt-0.5">
                     {selectedProject.genre} • {selectedProject.engine} • Semestre {selectedProject.semester}
                   </p>
+                  {isAdmin && selectedProject.id && (
+                    <div className="flex items-center gap-2 mt-2 pt-2 border-t border-gray-800/60">
+                      <span className="text-[10px] uppercase font-['Space_Mono'] text-gray-400">Alterar Status:</span>
+                      <select
+                        value={selectedProject.status}
+                        onChange={async (e) => {
+                          const newStatus = e.target.value;
+                          if (!selectedProject.id) return;
+                          try {
+                            await updateDoc(doc(db, 'projects', selectedProject.id), { status: newStatus });
+                            setSelectedProject({ ...selectedProject, status: newStatus as any });
+                            setProjects(prev => prev.map(p => p.id === selectedProject.id ? { ...p, status: newStatus as any } : p));
+                            toast.success(`Status atualizado para "${newStatus}"!`);
+                          } catch (err) {
+                            console.error(err);
+                            toast.error('Erro ao atualizar status');
+                          }
+                        }}
+                        className="bg-[#1b1b1e] border border-gray-700 text-xs text-gray-200 px-2 py-1 font-['Space_Mono'] outline-none cursor-pointer focus:border-emerald-500"
+                      >
+                        <option value="em andamento">Em Andamento</option>
+                        <option value="em produção">Em Produção</option>
+                        <option value="concluído">Concluído</option>
+                        <option value="pausado">Pausado</option>
+                        <option value="aprovado">Aprovado</option>
+                        <option value="em análise">Em Análise</option>
+                        <option value="ideia">Ideia</option>
+                        <option value="cancelado">Cancelado</option>
+                      </select>
+                    </div>
+                  )}
                 </div>
               </div>
               <button 
@@ -1720,12 +1857,14 @@ export default function ProjectsHub({
                     onChange={e => setNewProjectForm({ ...newProjectForm, status: e.target.value as any })}
                     className="w-full bg-[#161619] border border-gray-700 p-2.5 text-xs text-white outline-none"
                   >
+                    <option value="em andamento">Em Andamento</option>
                     <option value="em produção">Em Produção</option>
-                    <option value="aprovado">Aprovado</option>
-                    <option value="ideia">Ideia</option>
-                    <option value="em análise">Em Análise</option>
-                    <option value="pausado">Pausado</option>
                     <option value="concluído">Concluído</option>
+                    <option value="pausado">Pausado</option>
+                    <option value="aprovado">Aprovado</option>
+                    <option value="em análise">Em Análise</option>
+                    <option value="ideia">Ideia</option>
+                    <option value="cancelado">Cancelado</option>
                   </select>
                 </div>
               </div>
@@ -1784,9 +1923,9 @@ export default function ProjectsHub({
                   <label className="block text-gray-300 font-semibold mb-1 uppercase">Discord do Líder</label>
                   <input
                     type="text"
-                    placeholder="@usuario"
+                    placeholder="usuario_discord"
                     value={newProjectForm.leaderDiscord}
-                    onChange={e => setNewProjectForm({ ...newProjectForm, leaderDiscord: e.target.value })}
+                    onChange={e => setNewProjectForm({ ...newProjectForm, leaderDiscord: e.target.value.replace(/^@/, '') })}
                     className="w-full bg-[#161619] border border-gray-700 p-2.5 text-xs text-white outline-none focus:border-emerald-500"
                   />
                 </div>

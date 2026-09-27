@@ -119,7 +119,7 @@ export default function Form({ user, token }: FormProps) {
       toast.success('Solicitação de edição enviada para o RH!');
       
       // Notify HR
-      const rhEmails = ['isadorasdml@gmail.com', 'isadora.mlima@ufpe.br'];
+      const rhEmails = ['isadora.mlima@ufpe.br'];
       
       if (rhEmails.length > 0) {
         const emailContent = [
@@ -172,6 +172,11 @@ export default function Form({ user, token }: FormProps) {
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
     if (!user) return;
+
+    if (!formData.leagueRole || formData.leagueRole.trim() === '') {
+      toast.error('Selecione pelo menos uma função atual na liga');
+      return;
+    }
     
     setLoading(true);
     setErrorMsg('');
@@ -189,16 +194,16 @@ export default function Form({ user, token }: FormProps) {
         leagueFocus: Number(formData.leagueFocus || 0),
         weeklyHours: formData.weeklyHours || '',
         roleFocus: formData.roleFocus,
-        learningFocus: formData.learningFocus,
-        isInProject: formData.isInProject,
-        currentProjects: formData.currentProjects,
+        learningFocus: formData.learningFocus || '',
+        isInProject: formData.isInProject || 'Sim',
+        currentProjects: formData.currentProjects || '',
         notInProjectStatus: formData.notInProjectStatus || '',
-        interestedProjects: formData.interestedProjects,
+        interestedProjects: formData.interestedProjects || '',
         attendancePreference: formData.attendancePreference || '',
         microtasksInterest: formData.microtasksInterest || '',
-        priority: formData.priority,
-        progress: Number(formData.progress),
-        deadline: formData.deadline,
+        priority: formData.priority || 'Média',
+        progress: Number(formData.progress || 0),
+        deadline: formData.deadline || '',
         status: 'Ativo' // ensure it remains active
       };
 
@@ -313,10 +318,6 @@ export default function Form({ user, token }: FormProps) {
     if (isReadOnly) return;
     let newRoles: string[];
     if (selectedRoles.includes(role)) {
-      if (selectedRoles.length <= 1) {
-        toast.error('Selecione pelo menos uma função atual');
-        return;
-      }
       newRoles = selectedRoles.filter(r => r !== role);
     } else {
       newRoles = [...selectedRoles, role];
@@ -329,10 +330,6 @@ export default function Form({ user, token }: FormProps) {
 
   const removeRole = (role: string) => {
     if (isReadOnly) return;
-    if (selectedRoles.length <= 1) {
-      toast.error('Selecione pelo menos uma função atual');
-      return;
-    }
     const newRoles = selectedRoles.filter(r => r !== role);
     setFormData(prev => ({
       ...prev,
@@ -395,8 +392,8 @@ export default function Form({ user, token }: FormProps) {
               required 
               name="discordUser" 
               value={formData.discordUser} 
-              onChange={handleChange} 
-              placeholder="Ex: @usuario_laje" 
+              onChange={e => setFormData(prev => ({ ...prev, discordUser: e.target.value.replace(/^@/, '') }))} 
+              placeholder="usuario_discord" 
               disabled={isReadOnly}
               className={`w-full h-11 bg-transparent border border-[var(--color-ink-faint)] focus:border-[var(--color-accent)] text-[var(--color-ink)] px-3 outline-none transition-all ${isReadOnly ? 'opacity-50' : ''}`} 
             />
@@ -692,22 +689,15 @@ export default function Form({ user, token }: FormProps) {
           </div>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 pt-2">
-          <div className="space-y-2">
-            <label className="text-xs font-semibold uppercase text-gray-500">Nível de Prioridade</label>
-            <select name="priority" value={formData.priority} onChange={handleChange} disabled={isReadOnly}
-              className={`w-full bg-transparent border border-[var(--color-ink-faint)] focus:border-[var(--color-accent)] text-[var(--color-ink)] p-3 outline-none transition-all cursor-pointer ${isReadOnly ? 'opacity-50' : ''}`}>
-              <option className="bg-gray-900 text-gray-200">Baixa</option>
-              <option className="bg-gray-900 text-gray-200">Média</option>
-              <option className="bg-gray-900 text-gray-200">Alta</option>
-            </select>
+        {formData.isInProject === 'Sim' && (
+          <div className="pt-2">
+            <div className="space-y-2 max-w-md">
+              <label className="text-xs font-semibold uppercase text-gray-500">Data Limite / Meta</label>
+              <input type="date" min={today} name="deadline" value={formData.deadline} onChange={handleChange} disabled={isReadOnly}
+                className={`w-full bg-transparent border border-[var(--color-ink-faint)] focus:border-[var(--color-accent)] text-[var(--color-ink)] p-2.5 outline-none transition-all cursor-pointer [color-scheme:dark] ${isReadOnly ? 'opacity-50' : ''}`} />
+            </div>
           </div>
-          <div className="space-y-2">
-            <label className="text-xs font-semibold uppercase text-gray-500">Data Limite / Meta</label>
-            <input type="date" min={today} name="deadline" value={formData.deadline} onChange={handleChange} disabled={isReadOnly}
-              className={`w-full bg-transparent border border-[var(--color-ink-faint)] focus:border-[var(--color-accent)] text-[var(--color-ink)] p-2.5 outline-none transition-all cursor-pointer [color-scheme:dark] ${isReadOnly ? 'opacity-50' : ''}`} />
-          </div>
-        </div>
+        )}
       </section>
 
       {errorMsg && (
