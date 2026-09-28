@@ -34,10 +34,7 @@ export default function Form({ user, token }: FormProps) {
   const [selectedMemberId, setSelectedMemberId] = useState<string>('me');
   const [fetchingExisting, setFetchingExisting] = useState(true);
 
-  const isSuperAdmin = user?.email?.toLowerCase().trim() === 'isadora.mlima@ufpe.br' || 
-                       user?.email?.toLowerCase().trim() === 'isadora.mlima@ufpe' ||
-                       user?.email?.toLowerCase().trim() === 'isadorasdml@gmail.com' ||
-                       Boolean(user?.email?.toLowerCase().trim().startsWith('isadora.mlima@ufpe'));
+  const isSuperAdmin = user?.email?.toLowerCase().trim() === 'isadora.mlima@ufpe.br';
 
   const [formData, setFormData] = useState({
     name: user?.displayName || '',
@@ -423,7 +420,7 @@ export default function Form({ user, token }: FormProps) {
               </h4>
             </div>
             <span className="text-[10px] font-['Space_Mono'] uppercase px-2.5 py-0.5 bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
-              Autorizado: isadora.mlima@ufpe
+              Autorizado: isadora.mlima@ufpe.br
             </span>
           </div>
           <p className="text-xs text-gray-300 font-medium">
