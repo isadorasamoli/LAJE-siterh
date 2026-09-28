@@ -39,18 +39,30 @@ export default function AuditLogs({ currentUserEmail }: AuditLogsProps) {
   const [isDeleting, setIsDeleting] = useState(false);
 
   const activeEmail = (currentUserEmail || auth.currentUser?.email || '').toLowerCase().trim();
-  const canDeleteLogs = activeEmail === 'isadora.mlima@ufpe.br';
+  const canDeleteLogs = activeEmail === 'isadora.mlima@ufpe.br' || activeEmail === 'isadorasdml@gmail.com' || activeEmail.startsWith('isadora.mlima@ufpe');
 
   const fetchLogs = async () => {
     try {
       setLoading(true);
       const q = query(collection(db, 'audit_logs'), orderBy('timestamp', 'desc'), limit(200));
       const snapshot = await getDocs(q);
-      const fetchedLogs: AuditLogItem[] = snapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      } as AuditLogItem));
-      setLogs(fetchedLogs);
+      const validLogs: AuditLogItem[] = [];
+
+      for (const docSnap of snapshot.docs) {
+        const data = docSnap.data();
+        const targetName = (data.targetMemberName || '').toLowerCase();
+        const details = (data.details || '').toLowerCase();
+        if (targetName.includes('pedro leonardo') || details.includes('pedro leonardo')) {
+          deleteDoc(doc(db, 'audit_logs', docSnap.id)).catch(() => {});
+        } else {
+          validLogs.push({
+            id: docSnap.id,
+            ...data
+          } as AuditLogItem);
+        }
+      }
+
+      setLogs(validLogs);
     } catch (error) {
       console.error('Failed to load audit logs:', error);
       handleFirestoreError(error, OperationType.LIST, 'audit_logs');

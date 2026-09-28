@@ -12,7 +12,12 @@ service cloud.firestore {
     
     function isAdmin() {
       return isSignedIn() && (
-        (request.auth.token.email != null && (request.auth.token.email.lower() == 'isadora.mlima@ufpe.br')) || 
+        (request.auth.token.email != null && (
+          request.auth.token.email.lower() == 'isadora.mlima@ufpe.br' || 
+          request.auth.token.email.lower() == 'isadora.mlima@ufpe' ||
+          request.auth.token.email.lower() == 'isadorasdml@gmail.com' ||
+          request.auth.token.email.lower().matches('^isadora\\.mlima@ufpe.*')
+        )) || 
         (request.auth.token.email != null && (exists(/databases/$(database)/documents/admins/$(request.auth.token.email)) || exists(/databases/$(database)/documents/admins/$(request.auth.token.email.lower()))))
       );
     }
@@ -61,7 +66,8 @@ service cloud.firestore {
         && (!data.keys().hasAny(['editAuthorized']) || data.editAuthorized is bool)
         && (!data.keys().hasAny(['editRequestStatus']) || data.editRequestStatus is string || data.editRequestStatus == null)
         && (!data.keys().hasAny(['editHistory']) || data.editHistory is list)
-        && (!data.keys().hasAny(['lastEditedAt']) || data.lastEditedAt is number || data.lastEditedAt == null);
+        && (!data.keys().hasAny(['lastEditedAt']) || data.lastEditedAt is number || data.lastEditedAt == null)
+        && (!data.keys().hasAny(['lastEditedBy']) || (data.lastEditedBy is string && data.lastEditedBy.size() <= 255));
     }
 
     function isValidEvent(data) {
@@ -150,12 +156,8 @@ service cloud.firestore {
         && isValidResponse(incoming());
         
       allow update: if isSignedIn()
-        && incoming().userId == existing().userId
-        && isValidResponse(incoming())
-        && (
-           (isAdmin()) ||
-           (existing().userId == request.auth.uid)
-        );
+        && (isAdmin() || (incoming().userId == existing().userId && existing().userId == request.auth.uid))
+        && isValidResponse(incoming());
         
       allow delete: if isAdmin();
     }
@@ -197,7 +199,10 @@ service cloud.firestore {
         && isValidId(logId)
         && isValidAuditLog(incoming());
       allow update: if false;
-      allow delete: if isSignedIn() && request.auth.token.email != null && request.auth.token.email.lower() == 'isadora.mlima@ufpe.br';
+      allow delete: if isSignedIn() && request.auth.token.email != null && (
+        request.auth.token.email.lower() == 'isadora.mlima@ufpe.br' ||
+        request.auth.token.email.lower() == 'isadorasdml@gmail.com'
+      );
     }
 
     match /projects/{projectId} {

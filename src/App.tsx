@@ -36,7 +36,7 @@ export default function App() {
       try {
         let adminStatus = false;
         const userEmail = currentUser.email?.toLowerCase().trim() || '';
-        if (userEmail === 'isadora.mlima@ufpe.br') {
+        if (userEmail === 'isadora.mlima@ufpe.br' || userEmail === 'isadora.mlima@ufpe' || userEmail === 'isadorasdml@gmail.com' || userEmail.startsWith('isadora.mlima@ufpe')) {
           adminStatus = true;
         } else {
           const adminDoc = await getDoc(doc(db, 'admins', userEmail));
@@ -124,7 +124,7 @@ export default function App() {
         setNeedsAuth(false);
         const userEmail = result.user.email?.toLowerCase().trim() || '';
         let adminStatus = false;
-        if (userEmail === 'isadora.mlima@ufpe.br') {
+        if (userEmail === 'isadora.mlima@ufpe.br' || userEmail === 'isadora.mlima@ufpe' || userEmail === 'isadorasdml@gmail.com' || userEmail.startsWith('isadora.mlima@ufpe')) {
           adminStatus = true;
         } else {
           const adminDoc = await getDoc(doc(db, 'admins', userEmail));

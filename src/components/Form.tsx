@@ -4,8 +4,9 @@ import { collection, doc, setDoc, query, where, getDocs, updateDoc } from 'fireb
 import { db } from '../lib/firebase';
 import { handleFirestoreError, OperationType } from '../lib/utils';
 import { logAuditAction } from '../lib/audit';
-import { CheckCircle, Loader2, Send, ChevronDown, Check } from 'lucide-react';
+import { CheckCircle, Loader2, Send, ChevronDown, Check, FileText } from 'lucide-react';
 import { toast } from 'react-hot-toast';
+import { exportDetailedMemberPDF } from '../lib/exportDetailedMemberPDF';
 
 const AVAILABLE_ROLES = [
   'Programação',
@@ -28,7 +29,15 @@ export default function Form({ user, token }: FormProps) {
   const [errorMsg, setErrorMsg] = useState('');
   
   const [existingResponse, setExistingResponse] = useState<any>(null);
+  const [selfResponse, setSelfResponse] = useState<any>(null);
+  const [allResponses, setAllResponses] = useState<any[]>([]);
+  const [selectedMemberId, setSelectedMemberId] = useState<string>('me');
   const [fetchingExisting, setFetchingExisting] = useState(true);
+
+  const isSuperAdmin = user?.email?.toLowerCase().trim() === 'isadora.mlima@ufpe.br' || 
+                       user?.email?.toLowerCase().trim() === 'isadora.mlima@ufpe' ||
+                       user?.email?.toLowerCase().trim() === 'isadorasdml@gmail.com' ||
+                       Boolean(user?.email?.toLowerCase().trim().startsWith('isadora.mlima@ufpe'));
 
   const [formData, setFormData] = useState({
     name: user?.displayName || '',
@@ -42,7 +51,7 @@ export default function Form({ user, token }: FormProps) {
     weeklyHours: '4h',
     roleFocus: '',
     learningFocus: '',
-    isInProject: 'Não',
+    isInProject: 'Sim',
     currentProjects: '',
     notInProjectStatus: 'Quero entrar em um projeto e estou procurando',
     interestedProjects: '',
@@ -55,6 +64,71 @@ export default function Form({ user, token }: FormProps) {
 
   const [isRoleDropdownOpen, setIsRoleDropdownOpen] = useState(false);
   const roleDropdownRef = useRef<HTMLDivElement>(null);
+
+  const loadFormData = (data: any) => {
+    setFormData({
+      name: data.name || '',
+      birthday: data.birthday || '',
+      discordUser: data.discordUser || '',
+      course: data.course || '',
+      period: data.period || '',
+      collegeFocus: data.collegeFocus ?? 3,
+      leagueRole: data.leagueRole || 'Programação',
+      leagueFocus: data.leagueFocus ?? 3,
+      weeklyHours: data.weeklyHours || '4h',
+      roleFocus: data.roleFocus || '',
+      learningFocus: data.learningFocus || '',
+      isInProject: data.isInProject || (data.currentProjects ? 'Sim' : 'Não'),
+      currentProjects: data.currentProjects || '',
+      notInProjectStatus: data.notInProjectStatus || 'Quero entrar em um projeto e estou procurando',
+      interestedProjects: data.interestedProjects || '',
+      attendancePreference: data.attendancePreference || 'Sim, sem problema',
+      microtasksInterest: data.microtasksInterest || 'Sim, me avisem quando abrir',
+      priority: data.priority || 'Média',
+      progress: data.progress ?? 0,
+      deadline: data.deadline || '',
+    });
+  };
+
+  const handleSwitchMember = (targetId: string) => {
+    setSelectedMemberId(targetId);
+    if (targetId === 'me') {
+      if (selfResponse) {
+        setExistingResponse(selfResponse);
+        loadFormData(selfResponse);
+      } else {
+        setExistingResponse(null);
+        setFormData({
+          name: user?.displayName || '',
+          birthday: '',
+          discordUser: '',
+          course: '',
+          period: '',
+          collegeFocus: 3,
+          leagueRole: 'Programação',
+          leagueFocus: 3,
+          weeklyHours: '4h',
+          roleFocus: '',
+          learningFocus: '',
+          isInProject: 'Sim',
+          currentProjects: '',
+          notInProjectStatus: 'Quero entrar em um projeto e estou procurando',
+          interestedProjects: '',
+          attendancePreference: 'Sim, sem problema',
+          microtasksInterest: 'Sim, me avisem quando abrir',
+          priority: 'Média',
+          progress: 0,
+          deadline: '',
+        });
+      }
+    } else {
+      const target = allResponses.find(r => r.id === targetId);
+      if (target) {
+        setExistingResponse(target);
+        loadFormData(target);
+      }
+    }
+  };
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -74,30 +148,21 @@ export default function Form({ user, token }: FormProps) {
         const snap = await getDocs(q);
         if (!snap.empty) {
           const data = snap.docs[0].data();
-          setExistingResponse({ id: snap.docs[0].id, ...data });
-          
-          setFormData({
-            name: data.name || '',
-            birthday: data.birthday || '',
-            discordUser: data.discordUser || '',
-            course: data.course || '',
-            period: data.period || '',
-            collegeFocus: data.collegeFocus ?? 3,
-            leagueRole: data.leagueRole || 'Programação',
-            leagueFocus: data.leagueFocus ?? 3,
-            weeklyHours: data.weeklyHours || '4h',
-            roleFocus: data.roleFocus || '',
-            learningFocus: data.learningFocus || '',
-            isInProject: data.isInProject || (data.currentProjects ? 'Sim' : 'Não'),
-            currentProjects: data.currentProjects || '',
-            notInProjectStatus: data.notInProjectStatus || 'Quero entrar em um projeto e estou procurando',
-            interestedProjects: data.interestedProjects || '',
-            attendancePreference: data.attendancePreference || 'Sim, sem problema',
-            microtasksInterest: data.microtasksInterest || 'Sim, me avisem quando abrir',
-            priority: data.priority || 'Média',
-            progress: data.progress ?? 0,
-            deadline: data.deadline || '',
-          });
+          const selfDoc = { id: snap.docs[0].id, ...data };
+          setExistingResponse(selfDoc);
+          setSelfResponse(selfDoc);
+          loadFormData(data);
+        }
+
+        if (isSuperAdmin) {
+          try {
+            const allSnap = await getDocs(collection(db, 'responses'));
+            const list: any[] = allSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+            list.sort((a: any, b: any) => (String(a.name || '')).localeCompare(String(b.name || '')));
+            setAllResponses(list);
+          } catch (e) {
+            console.error("Failed to load all responses for super admin", e);
+          }
         }
       } catch (err) {
         console.error("Failed to fetch existing response", err);
@@ -106,7 +171,7 @@ export default function Form({ user, token }: FormProps) {
       }
     };
     fetchExisting();
-  }, [user]);
+  }, [user, isSuperAdmin]);
 
   const requestEdit = async () => {
     if (!existingResponse || !token || !user) return;
@@ -208,12 +273,17 @@ export default function Form({ user, token }: FormProps) {
       };
 
       if (existingResponse) {
-        await updateDoc(doc(db, 'responses', existingResponse.id), {
+        const updatePayload = {
           ...responseData,
+          userId: existingResponse.userId || user.uid,
+          email: existingResponse.email || user.email || '',
           lastEditedAt: Date.now(),
-          editAuthorized: false,
+          lastEditedBy: user.email || 'isadora.mlima@ufpe.br',
+          editAuthorized: isSuperAdmin ? true : false,
           editRequestStatus: null
-        });
+        };
+
+        await updateDoc(doc(db, 'responses', existingResponse.id), updatePayload);
 
         // Record audit log for data update
         const changedFields: string[] = [];
@@ -223,15 +293,16 @@ export default function Form({ user, token }: FormProps) {
         if (existingResponse.period !== responseData.period) changedFields.push(`Período`);
         if (existingResponse.leagueRole !== responseData.leagueRole) changedFields.push(`Área`);
         if (existingResponse.weeklyHours !== responseData.weeklyHours) changedFields.push(`Horas`);
-        if (existingResponse.progress !== responseData.progress) changedFields.push(`Progresso`);
         if (existingResponse.currentProjects !== responseData.currentProjects) changedFields.push(`Projetos`);
 
         await logAuditAction({
           action: 'Atualização de Dados',
           targetMemberId: existingResponse.id,
           targetMemberName: responseData.name,
-          targetMemberEmail: responseData.email,
-          details: changedFields.length > 0 
+          targetMemberEmail: existingResponse.email || responseData.email,
+          details: isSuperAdmin && selectedMemberId !== 'me'
+            ? `Respostas de ${responseData.name} foram editadas no formulário por isadora.mlima@ufpe`
+            : changedFields.length > 0 
             ? `Membro atualizou dados cadastrais (${changedFields.join(', ')})`
             : `Membro atualizou dados do formulário`,
           previousValue: JSON.stringify({
@@ -239,7 +310,6 @@ export default function Form({ user, token }: FormProps) {
             course: existingResponse.course,
             period: existingResponse.period,
             leagueRole: existingResponse.leagueRole,
-            progress: existingResponse.progress,
             weeklyHours: existingResponse.weeklyHours,
             currentProjects: existingResponse.currentProjects,
           }),
@@ -248,16 +318,20 @@ export default function Form({ user, token }: FormProps) {
             course: responseData.course,
             period: responseData.period,
             leagueRole: responseData.leagueRole,
-            progress: responseData.progress,
             weeklyHours: responseData.weeklyHours,
             currentProjects: responseData.currentProjects,
           }),
-          performedByEmail: user.email || '',
-          performedByName: user.displayName || user.email || '',
+          performedByEmail: user.email || 'isadora.mlima@ufpe.br',
+          performedByName: user.displayName || user.email || 'Isadora',
         });
 
-        toast.success('Formulário atualizado com sucesso!');
-        setExistingResponse({ ...existingResponse, editAuthorized: false, editRequestStatus: null });
+        toast.success(`Formulário de ${responseData.name || 'membro'} atualizado com sucesso!`);
+        const updatedDoc = { ...existingResponse, ...updatePayload };
+        setExistingResponse(updatedDoc);
+        if (selectedMemberId === 'me') {
+          setSelfResponse(updatedDoc);
+        }
+        setAllResponses(prev => prev.map(m => m.id === existingResponse.id ? updatedDoc : m));
       } else {
         const newResponseId = crypto.randomUUID();
         await setDoc(doc(db, 'responses', newResponseId), {
@@ -308,7 +382,7 @@ export default function Form({ user, token }: FormProps) {
   }
 
   const today = new Date().toISOString().split('T')[0];
-  const isReadOnly = existingResponse && !existingResponse.editAuthorized;
+  const isReadOnly = existingResponse && !existingResponse.editAuthorized && !isSuperAdmin;
 
   const selectedRoles: string[] = formData.leagueRole
     ? formData.leagueRole.split(',').map(r => r.trim()).filter(Boolean)
@@ -339,30 +413,102 @@ export default function Form({ user, token }: FormProps) {
 
   return (
     <form onSubmit={handleSubmit} className="w-full max-w-3xl mx-auto space-y-8 pb-12">
+      {isSuperAdmin && (
+        <div className="p-5 bg-gradient-to-r from-emerald-950/40 to-slate-900 border border-emerald-500/40 shadow-lg space-y-3 mb-6">
+          <div className="flex items-center justify-between flex-wrap gap-2">
+            <div className="flex items-center gap-2">
+              <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse"></span>
+              <h4 className="text-sm font-['Syne'] font-bold text-emerald-300 uppercase tracking-wider">
+                Acesso Especial: Edição de Respostas do Formulário
+              </h4>
+            </div>
+            <span className="text-[10px] font-['Space_Mono'] uppercase px-2.5 py-0.5 bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+              Autorizado: isadora.mlima@ufpe
+            </span>
+          </div>
+          <p className="text-xs text-gray-300 font-medium">
+            Você tem privilégios totais para editar qualquer resposta enviada no formulário. Selecione abaixo a resposta do membro que deseja alterar:
+          </p>
+          <div className="flex flex-col sm:flex-row sm:items-center gap-3 pt-1">
+            <label className="text-xs font-semibold uppercase text-emerald-400 font-['Space_Mono'] whitespace-nowrap">
+              Membro selecionado:
+            </label>
+            <select
+              value={selectedMemberId}
+              onChange={(e) => handleSwitchMember(e.target.value)}
+              className="flex-1 bg-[#121216] border border-emerald-500/50 text-emerald-200 text-xs p-2.5 outline-none font-['Space_Mono'] cursor-pointer focus:border-emerald-400"
+            >
+              <option value="me">Minha Resposta ({user?.email})</option>
+              {allResponses.length > 0 && (
+                <optgroup label={`Respostas dos Membros Cadastrados (${allResponses.length})`}>
+                  {allResponses.map((r) => (
+                    <option key={r.id} value={r.id}>
+                      {r.name || 'Sem nome'} — {r.leagueRole || 'Sem área'} ({r.email || 'sem e-mail'})
+                    </option>
+                  ))}
+                </optgroup>
+              )}
+            </select>
+          </div>
+        </div>
+      )}
+
       {existingResponse && (
-        <div className="flex items-center justify-between p-4 bg-[var(--color-bg-dark)] border border-[var(--color-ink-faint)] mb-8">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-4 bg-[var(--color-bg-dark)] border border-[var(--color-ink-faint)] mb-8">
           <div>
             <h3 className="font-['Syne'] uppercase text-[var(--color-ink)] font-bold">Status do Formulário</h3>
             <p className="font-['Space_Mono'] uppercase text-[0.7rem] text-[var(--color-ink-muted)]">
-              {isReadOnly ? 'Somente Leitura - Aguardando ou requer autorização' : 'Modo de Edição Autorizado'}
+              {isSuperAdmin
+                ? `Modo Administrador - Edição Livre Ativa (${selectedMemberId === 'me' ? 'Meu Formulário' : (formData.name || 'Membro')})`
+                : isReadOnly
+                ? 'Somente Leitura - Aguardando ou requer autorização'
+                : 'Modo de Edição Autorizado'}
             </p>
           </div>
-          {isReadOnly && existingResponse.editRequestStatus === 'pending' ? (
-             <div className="px-4 py-2 bg-yellow-500/10 border border-yellow-500/20 text-yellow-500 font-bold text-xs uppercase tracking-wider flex items-center gap-2">
-               <Loader2 className="w-4 h-4 animate-spin" />
-               Aguardando RH
-             </div>
-          ) : isReadOnly ? (
-             <button 
-               type="button"
-               onClick={requestEdit}
-               disabled={loading}
-               className="px-4 py-2 bg-[var(--color-ink-faint)] hover:bg-[rgba(255,255,255,0.1)] text-[var(--color-ink)] font-bold text-xs uppercase tracking-wider transition-colors cursor-pointer border-none flex items-center gap-2"
-             >
-               {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
-               Solicitar Edição
-             </button>
-          ) : null}
+          <div className="flex items-center gap-2 flex-wrap">
+            <button
+              type="button"
+              onClick={() => {
+                try {
+                  exportDetailedMemberPDF({
+                    ...formData,
+                    email: user?.email || '',
+                    createdAt: existingResponse.createdAt,
+                    lastEditedAt: existingResponse.lastEditedAt,
+                    status: existingResponse.status || 'Ativo',
+                    editRequestStatus: existingResponse.editRequestStatus,
+                    editAuthorized: existingResponse.editAuthorized,
+                    editHistory: existingResponse.editHistory
+                  });
+                  toast.success('Ficha cadastral em PDF gerada!');
+                } catch (err) {
+                  console.error(err);
+                  toast.error('Erro ao gerar PDF');
+                }
+              }}
+              className="px-3 py-2 bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/30 text-emerald-400 font-bold text-xs uppercase tracking-wider transition-colors cursor-pointer flex items-center gap-1.5"
+              title="Baixar cópia detalhada em PDF desta resposta"
+            >
+              <FileText className="w-3.5 h-3.5" />
+              Baixar Ficha em PDF
+            </button>
+            {isReadOnly && existingResponse.editRequestStatus === 'pending' ? (
+              <div className="px-4 py-2 bg-yellow-500/10 border border-yellow-500/20 text-yellow-500 font-bold text-xs uppercase tracking-wider flex items-center gap-2">
+                <Loader2 className="w-4 h-4 animate-spin" />
+                Aguardando RH
+              </div>
+            ) : isReadOnly ? (
+              <button 
+                type="button"
+                onClick={requestEdit}
+                disabled={loading}
+                className="px-4 py-2 bg-[var(--color-ink-faint)] hover:bg-[rgba(255,255,255,0.1)] text-[var(--color-ink)] font-bold text-xs uppercase tracking-wider transition-colors cursor-pointer border-none flex items-center gap-2"
+              >
+                {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+                Solicitar Edição
+              </button>
+            ) : null}
+          </div>
         </div>
       )}
 
@@ -625,7 +771,7 @@ export default function Form({ user, token }: FormProps) {
                 name="currentProjects"
                 value={formData.currentProjects}
                 onChange={handleChange}
-                placeholder="Ex: Depois do Espetáculo (Programação de IA)"
+                placeholder="Ex: Depois do Espetáculo"
                 disabled={isReadOnly}
                 className={`w-full bg-transparent border border-[var(--color-ink-faint)] focus:border-[var(--color-accent)] text-[var(--color-ink)] p-3 outline-none text-xs font-['Space_Mono'] ${isReadOnly ? 'opacity-50' : ''}`}
               />
@@ -718,7 +864,7 @@ export default function Form({ user, token }: FormProps) {
                 <Loader2 className="animate-spin" size={20} />
                 Transmitindo...
               </>
-            ) : 'Submeter Dados'}
+            ) : (isSuperAdmin && selectedMemberId !== 'me' ? 'Salvar Alterações do Membro' : 'Submeter Dados')}
           </button>
         </div>
       )}

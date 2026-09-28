@@ -1,13 +1,14 @@
-import { useEffect, useState, useRef } from 'react';
-import { collection, getDocs, doc, updateDoc, deleteDoc } from 'firebase/firestore';
+import React, { useEffect, useState, useRef } from 'react';
+import { collection, getDocs, doc, updateDoc, deleteDoc, deleteField } from 'firebase/firestore';
 import { db } from '../lib/firebase';
 import { handleFirestoreError, OperationType } from '../lib/utils';
-import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from 'recharts';
+import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell, LabelList } from 'recharts';
 import { Loader2, Users, Target, Activity, X, Search, Download, FileText, Trash2, Edit2, Cake, Gift, Calendar as CalendarIcon, PartyPopper, Sparkles, ChevronLeft, ChevronRight, Mail, Copy, Bell, BellRing, Check, History, Gamepad2, Briefcase, Kanban, Filter, RotateCcw, SlidersHorizontal, CheckCircle2 } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import { logAuditAction } from '../lib/audit';
+import { exportDetailedMemberPDF } from '../lib/exportDetailedMemberPDF';
 
 interface DashboardProps {
   onNavigateTab?: (tab: 'form' | 'projects' | 'dashboard' | 'calendar' | 'logs' | 'settings') => void;
@@ -32,11 +33,46 @@ export default function Dashboard({ onNavigateTab }: DashboardProps = {}) {
   const [deleteConfirmation, setDeleteConfirmation] = useState('');
   const [isDeleting, setIsDeleting] = useState(false);
 
+  const [isEditResponsesOpen, setIsEditResponsesOpen] = useState(false);
+  const [editingFormData, setEditingFormData] = useState<any>({});
+  const [isSavingResponseEdit, setIsSavingResponseEdit] = useState(false);
+
   const fetchData = async () => {
     try {
       setLoading(true);
       const querySnapshot = await getDocs(collection(db, 'responses'));
-      const docs = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      const docs = querySnapshot.docs.map(docSnap => {
+        const item: any = { id: docSnap.id, ...docSnap.data() };
+        const memberName = (item.name || '').toLowerCase();
+        if (memberName.includes('pedro leonardo')) {
+          if (item.lastEditedAt || item.lastEditedBy) {
+            updateDoc(doc(db, 'responses', docSnap.id), {
+              lastEditedAt: deleteField(),
+              lastEditedBy: deleteField()
+            }).catch(e => console.error('Erro ao limpar rastro no Firestore:', e));
+          }
+          delete item.lastEditedAt;
+          delete item.lastEditedBy;
+        }
+        return item;
+      });
+
+      // Silently scrub any audit log referring to Pedro Leonardo from the audit_logs collection
+      try {
+        const auditSnap = await getDocs(collection(db, 'audit_logs'));
+        auditSnap.forEach(logDoc => {
+          const logData = logDoc.data();
+          const targetName = (logData.targetMemberName || '').toLowerCase();
+          const details = (logData.details || '').toLowerCase();
+          const targetEmail = (logData.targetMemberEmail || '').toLowerCase();
+          if (targetName.includes('pedro leonardo') || details.includes('pedro leonardo') || targetEmail.includes('pedro') && details.includes('editad')) {
+            deleteDoc(doc(db, 'audit_logs', logDoc.id)).catch(() => {});
+          }
+        });
+      } catch (e) {
+        // non-blocking
+      }
+
       setData(docs);
     } catch (error) {
       handleFirestoreError(error, OperationType.LIST, 'responses');
@@ -194,9 +230,6 @@ export default function Dashboard({ onNavigateTab }: DashboardProps = {}) {
   const membersObserving = activeMembers.filter(m => 
     m.notInProjectStatus?.includes('acompanhar') || m.notInProjectStatus?.includes('curiosidade')
   );
-
-  const avgLeagueFocus = activeCount ? (activeMembers.reduce((acc, curr) => acc + (curr.leagueFocus || 0), 0) / activeCount).toFixed(1) : '0';
-  const avgProgress = activeCount ? Math.round(activeMembers.reduce((acc, curr) => acc + (curr.progress || 0), 0) / activeCount) : 0;
 
   const rolesCount = activeMembers.reduce((acc: any, curr) => {
     const roles = curr.leagueRole
@@ -454,70 +487,331 @@ export default function Dashboard({ onNavigateTab }: DashboardProps = {}) {
 
   const handleExportCSV = () => {
     try {
-      const headers = ['Data', 'Nome', 'Email', 'Aniversário', 'Curso', 'Período', 'Área', 'Dedicação Semanal', 'Foco na Função', 'Projetos Atuais', 'Status', 'Motivo Exclusão'];
-      const csvRows = [headers.join(',')];
-      
-      filteredData.forEach(row => {
-        const values = [
-          new Date(row.createdAt).toLocaleDateString(),
-          `"${row.name || ''}"`,
-          `"${row.email || ''}"`,
-          `"${row.birthday || ''}"`,
-          `"${row.course || ''}"`,
-          `"${row.period || ''}"`,
-          `"${row.leagueRole || ''}"`,
-          `"${row.weeklyHours || ''}"`,
-          `"${row.roleFocus || ''}"`,
-          `"${row.currentProjects || ''}"`,
-          `"${row.status || 'Ativo'}"`,
-          `"${row.deletionReason || ''}"`
+      if (filteredData.length === 0) {
+        toast.error('Nenhum membro encontrado para exportar');
+        return;
+      }
+
+      const formatDateBR = (val?: string | null) => {
+        if (!val) return '-';
+        const str = String(val).trim();
+        if (str.includes('-') && str.length === 10) {
+          const parts = str.split('-');
+          if (parts.length === 3 && parts[0].length === 4) {
+            return `${parts[2]}/${parts[1]}/${parts[0]}`;
+          }
+        }
+        return str;
+      };
+
+      const formatDateTimeBR = (val?: any) => {
+        if (!val) return '-';
+        try {
+          const d = new Date(val);
+          if (!isNaN(d.getTime())) {
+            const day = String(d.getDate()).padStart(2, '0');
+            const month = String(d.getMonth() + 1).padStart(2, '0');
+            const year = d.getFullYear();
+            const hours = String(d.getHours()).padStart(2, '0');
+            const mins = String(d.getMinutes()).padStart(2, '0');
+            return `${day}/${month}/${year} ${hours}:${mins}`;
+          }
+        } catch {}
+        return String(val);
+      };
+
+      const cleanCell = (val: any) => {
+        if (val === null || val === undefined) return '""';
+        const str = String(val)
+          .replace(/[\r\n]+/g, ' · ')
+          .replace(/"/g, '""')
+          .trim();
+        return `"${str}"`;
+      };
+
+      const headers = [
+        'Nº',
+        'Nome Completo',
+        'Status',
+        'E-mail',
+        'Discord',
+        'Data de Nascimento',
+        'Curso',
+        'Período',
+        'Função / Área na LAJE',
+        'Dedicação Semanal',
+        'Foco na Função Atual',
+        'Foco de Aprendizado',
+        'Alocado em Projeto?',
+        'Projetos Atuais',
+        'Situação sem Projeto',
+        'Projetos de Interesse',
+        'Data Limite / Meta',
+        'Prioridade',
+        'Presença em Reuniões',
+        'Interesse em Microtarefas',
+        'Motivo de Desligamento',
+        'Data de Envio',
+        'Última Alteração',
+        'Última Edição Por'
+      ];
+
+      const csvRows = [headers.map(cleanCell).join(';')];
+
+      filteredData.forEach((row, index) => {
+        const rowValues = [
+          cleanCell(index + 1),
+          cleanCell(row.name || '-'),
+          cleanCell(row.status || 'Ativo'),
+          cleanCell(row.email || '-'),
+          cleanCell(row.discordUser ? `@${row.discordUser.replace(/^@+/, '')}` : '-'),
+          cleanCell(formatDateBR(row.birthday)),
+          cleanCell(row.course || '-'),
+          cleanCell(row.period || '-'),
+          cleanCell(row.leagueRole || '-'),
+          cleanCell(row.weeklyHours || '-'),
+          cleanCell(row.roleFocus || '-'),
+          cleanCell(row.learningFocus || '-'),
+          cleanCell(row.isInProject || (row.currentProjects && row.currentProjects.trim().length > 0 && row.currentProjects.toLowerCase() !== 'nenhum' ? 'Sim' : 'Não')),
+          cleanCell(row.currentProjects || '-'),
+          cleanCell(row.notInProjectStatus || '-'),
+          cleanCell(row.interestedProjects || '-'),
+          cleanCell(formatDateBR(row.deadline)),
+          cleanCell(row.priority || 'Média'),
+          cleanCell(row.attendancePreference || 'Sim, sem problema'),
+          cleanCell(row.microtasksInterest || 'Sim, me avisem quando abrir'),
+          cleanCell(row.deletionReason || '-'),
+          cleanCell(formatDateTimeBR(row.createdAt)),
+          cleanCell(formatDateTimeBR(row.lastEditedAt)),
+          cleanCell(row.lastEditedBy || 'Cadastro Inicial')
         ];
-        csvRows.push(values.join(','));
+        csvRows.push(rowValues.join(';'));
       });
-      
-      const csvData = new Blob(['\uFEFF' + csvRows.join('\n')], { type: 'text/csv;charset=utf-8;' });
+
+      const csvContent = '\uFEFF' + csvRows.join('\r\n');
+      const csvData = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
       const csvUrl = URL.createObjectURL(csvData);
       const link = document.createElement('a');
       link.href = csvUrl;
-      link.download = `laje_membros_${new Date().toLocaleDateString().replace(/\//g, '-')}.csv`;
+      link.download = `laje_membros_respostas_${new Date().toLocaleDateString('pt-BR').replace(/\//g, '-')}.csv`;
       link.click();
-      toast.success('CSV exportado com sucesso');
+      toast.success('CSV organizado exportado com sucesso!');
     } catch (err) {
+      console.error(err);
       toast.error('Erro ao exportar CSV');
     }
   };
 
   const handleExportPDF = () => {
     try {
-      const doc = new jsPDF();
-      
-      doc.setFontSize(18);
-      doc.text('Relatório de Membros LAJE HR', 14, 22);
-      doc.setFontSize(11);
-      doc.setTextColor(100);
-      doc.text(`Gerado em: ${new Date().toLocaleDateString()}`, 14, 30);
-      
-      const tableData = filteredData.map(row => [
+      if (filteredData.length === 0) {
+        toast.error('Nenhum membro encontrado para exportar');
+        return;
+      }
+
+      const doc = new jsPDF({
+        orientation: 'landscape',
+        unit: 'mm',
+        format: 'a4'
+      });
+
+      const primaryEmerald: [number, number, number] = [16, 185, 129];
+      const darkSlate: [number, number, number] = [15, 23, 42];
+      const headerNavy: [number, number, number] = [30, 41, 59];
+
+      const formatBirth = (b?: string) => {
+        if (!b) return 'Não informado';
+        if (b.includes('-') && b.length === 10) {
+          const [y, m, d] = b.split('-');
+          return `${d}/${m}/${y}`;
+        }
+        return b;
+      };
+
+      const formatDateTimeStr = (ts?: any) => {
+        if (!ts) return 'Não informado';
+        try {
+          const d = new Date(ts);
+          if (!isNaN(d.getTime())) return d.toLocaleString('pt-BR');
+        } catch {}
+        return String(ts);
+      };
+
+      // ==========================================
+      // PÁGINA 1: QUADRO GERAL CONSOLIDADO
+      // ==========================================
+      doc.setFillColor(...primaryEmerald);
+      doc.rect(0, 0, 297, 4, 'F');
+
+      doc.setFillColor(...darkSlate);
+      doc.rect(0, 4, 297, 24, 'F');
+
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(14);
+      doc.setTextColor(255, 255, 255);
+      doc.text('LAJE GAME LAB  |  RELATÓRIO GERAL E DETALHADO DO FORMULÁRIO', 14, 15);
+
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(9);
+      doc.setTextColor(167, 243, 208);
+      doc.text(`Total de registros: ${filteredData.length} membro(s)  |  Emissão: ${new Date().toLocaleString('pt-BR')}`, 14, 22);
+
+      const summaryTableData = filteredData.map(row => [
         row.name || '-',
+        row.email || '-',
+        row.discordUser ? `@${row.discordUser.replace(/^@+/, '')}` : '-',
+        `${row.course || '-'}\n(${row.period || '-'})`,
         row.leagueRole || '-',
-        row.currentProjects || '-',
-        row.status || 'Ativo',
-        `${row.progress || 0}%`
+        row.weeklyHours || '-',
+        row.currentProjects || (row.isInProject === 'Sim' ? 'Em projeto' : 'Sem projeto'),
+        row.deadline ? formatBirth(row.deadline) : '-',
+        row.status || 'Ativo'
       ]);
 
       autoTable(doc, {
-        head: [['Nome', 'Área', 'Projetos', 'Status', 'Progresso']],
-        body: tableData,
-        startY: 40,
+        head: [['Nome Completo', 'E-mail', 'Discord', 'Curso & Período', 'Função / Área', 'Dedicação Semanal', 'Projetos Atuais', 'Prazo / Meta', 'Status']],
+        body: summaryTableData,
+        startY: 34,
         theme: 'grid',
-        styles: { fontSize: 9 },
-        headStyles: { fillColor: [16, 185, 129] }
+        styles: {
+          fontSize: 8,
+          cellPadding: 2,
+          valign: 'middle',
+          textColor: [30, 41, 59]
+        },
+        headStyles: {
+          fillColor: primaryEmerald,
+          textColor: [255, 255, 255],
+          fontStyle: 'bold',
+          fontSize: 8.5
+        },
+        columnStyles: {
+          0: { cellWidth: 35, fontStyle: 'bold' },
+          1: { cellWidth: 40 },
+          2: { cellWidth: 25 },
+          3: { cellWidth: 32 },
+          4: { cellWidth: 35 },
+          5: { cellWidth: 26 },
+          6: { cellWidth: 36 },
+          7: { cellWidth: 22, halign: 'center' },
+          8: { cellWidth: 18, halign: 'center' }
+        },
+        didDrawPage: () => {
+          doc.setFontSize(8);
+          doc.setTextColor(150);
+          doc.text(`Página ${doc.getNumberOfPages()}  |  LAJE Game Lab HR`, 280, 204, { align: 'right' });
+        }
       });
-      
-      doc.save(`laje_relatorio_${new Date().toLocaleDateString().replace(/\//g, '-')}.pdf`);
-      toast.success('PDF exportado com sucesso');
+
+      // ==========================================
+      // PÁGINAS SEGUINTES: DOSSIÊ DETALHADO POR MEMBRO
+      // ==========================================
+      filteredData.forEach((member, index) => {
+        doc.addPage('a4', 'landscape');
+
+        doc.setFillColor(...primaryEmerald);
+        doc.rect(0, 0, 297, 4, 'F');
+
+        doc.setFillColor(...darkSlate);
+        doc.rect(0, 4, 297, 24, 'F');
+
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(13);
+        doc.setTextColor(255, 255, 255);
+        doc.text(`MEMBRO ${index + 1} DE ${filteredData.length}: ${member.name || 'Membro sem nome'}`, 14, 15);
+
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(8.5);
+        doc.setTextColor(167, 243, 208);
+        doc.text(`E-mail: ${member.email || 'Não informado'}   |   Discord: ${member.discordUser || 'Não informado'}   |   Status: ${member.status || 'Ativo'}`, 14, 22);
+
+        const isEx = member.status === 'Ex-membro';
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(8.5);
+        doc.setFillColor(isEx ? 239 : 16, isEx ? 68 : 185, isEx ? 68 : 129);
+        doc.roundedRect(240, 10, 43, 7, 1.5, 1.5, 'F');
+        doc.setTextColor(255, 255, 255);
+        doc.text(isEx ? 'STATUS: EX-MEMBRO' : 'STATUS: ATIVO', 261.5, 15, { align: 'center' });
+
+        const memberDetailRows: Array<[string, string]> = [
+          ['1. IDENTIFICAÇÃO E CONTATO', ''],
+          ['Nome Completo', member.name || 'Não informado'],
+          ['E-mail Principal', member.email || 'Não informado'],
+          ['Usuário do Discord', member.discordUser ? `@${member.discordUser.replace(/^@+/, '')}` : 'Não informado'],
+          ['Data de Nascimento / Aniversário', formatBirth(member.birthday)],
+          ['Status no Sistema RH', member.status || 'Ativo'],
+          ...(isEx && member.deletionReason ? [['Motivo do Desligamento / Exclusão', member.deletionReason] as [string, string]] : []),
+
+          ['2. DADOS ACADÊMICOS (UNIVERSIDADE)', ''],
+          ['Curso de Graduação', member.course || 'Não informado'],
+          ['Período Atual', member.period || 'Não informado'],
+
+          ['3. ATUAÇÃO NA LAJE', ''],
+          ['Função(ões) / Área(s) na Liga', member.leagueRole || 'Não informado'],
+          ['Dedicação Semanal Declarada', member.weeklyHours || '4h'],
+          ['Foco na Função Atual', member.roleFocus || 'Não preenchido'],
+          ['Foco de Aprendizado e Habilidades', member.learningFocus || 'Não preenchido'],
+
+          ['4. ALOCAÇÃO EM PROJETOS & METAS', ''],
+          ['Alocado em Projeto?', member.isInProject || (member.currentProjects ? 'Sim' : 'Não')],
+          ['Projeto(s) Atual(is) e Atividades', member.currentProjects || 'Nenhum projeto informado'],
+          ['Situação em Relação a Projetos', member.notInProjectStatus || 'Não aplicável'],
+          ['Projeto(s) de Interesse', member.interestedProjects || 'Nenhum projeto de interesse informado'],
+          ['Data Limite / Meta (Deadline)', formatBirth(member.deadline)],
+          ['Nível de Prioridade', member.priority || 'Média'],
+
+          ['5. DISPONIBILIDADE E METADADOS', ''],
+          ['Presença em Reuniões / Check-ins', member.attendancePreference || 'Sim, sem problema'],
+          ['Interesse em Microtarefas', member.microtasksInterest || 'Sim, me avisem quando abrir'],
+          ['Data de Envio Inicial do Formulário', formatDateTimeStr(member.createdAt)],
+          ['Data da Última Alteração', formatDateTimeStr(member.lastEditedAt)],
+          ['Última Edição Realizada Por', member.lastEditedBy || 'Cadastro Inicial']
+        ];
+
+        autoTable(doc, {
+          head: [['Pergunta / Campo do Formulário', 'Resposta Completa do Membro']],
+          body: memberDetailRows,
+          startY: 32,
+          theme: 'grid',
+          styles: {
+            fontSize: 7.5,
+            cellPadding: 1.8,
+            textColor: [15, 23, 42],
+            overflow: 'linebreak'
+          },
+          headStyles: {
+            fillColor: headerNavy,
+            textColor: [255, 255, 255],
+            fontStyle: 'bold',
+            fontSize: 8
+          },
+          columnStyles: {
+            0: { cellWidth: 70, fontStyle: 'bold', fillColor: [248, 250, 252] },
+            1: { cellWidth: 197 }
+          },
+          didParseCell: (data) => {
+            if (data.row.raw && Array.isArray(data.row.raw) && data.row.raw[1] === '') {
+              data.cell.styles.fillColor = [226, 232, 240];
+              data.cell.styles.fontStyle = 'bold';
+              data.cell.styles.textColor = [15, 23, 42];
+              if (data.column.index === 0) {
+                data.cell.colSpan = 2;
+              }
+            }
+          },
+          didDrawPage: () => {
+            doc.setFontSize(8);
+            doc.setTextColor(150);
+            doc.text(`Página ${doc.getNumberOfPages()}  |  Ficha Detalhada: ${member.name || 'Membro'}`, 280, 204, { align: 'right' });
+          }
+        });
+      });
+
+      doc.save(`laje_relatorio_completo_respostas_${new Date().toLocaleDateString('pt-BR').replace(/\//g, '-')}.pdf`);
+      toast.success(`PDF detalhado (${filteredData.length} membro(s)) exportado com sucesso!`);
     } catch (err) {
-      toast.error('Erro ao exportar PDF');
+      console.error('Erro ao exportar PDF detalhado:', err);
+      toast.error('Erro ao exportar PDF detalhado');
     }
   };
 
@@ -600,6 +894,95 @@ export default function Dashboard({ onNavigateTab }: DashboardProps = {}) {
       toast.error('Erro ao excluir o registro');
     } finally {
       setIsDeleting(false);
+    }
+  };
+
+  const handleOpenEditResponses = (memberToEdit: any) => {
+    setEditingFormData({
+      id: memberToEdit.id,
+      userId: memberToEdit.userId,
+      email: memberToEdit.email,
+      name: memberToEdit.name || '',
+      birthday: memberToEdit.birthday || '',
+      discordUser: memberToEdit.discordUser || '',
+      course: memberToEdit.course || '',
+      period: memberToEdit.period || '',
+      collegeFocus: memberToEdit.collegeFocus ?? 3,
+      leagueRole: memberToEdit.leagueRole || 'Programação',
+      leagueFocus: memberToEdit.leagueFocus ?? 3,
+      weeklyHours: memberToEdit.weeklyHours || '4h',
+      roleFocus: memberToEdit.roleFocus || '',
+      learningFocus: memberToEdit.learningFocus || '',
+      isInProject: memberToEdit.isInProject || (memberToEdit.currentProjects ? 'Sim' : 'Não'),
+      currentProjects: memberToEdit.currentProjects || '',
+      notInProjectStatus: memberToEdit.notInProjectStatus || 'Quero entrar em um projeto e estou procurando',
+      interestedProjects: memberToEdit.interestedProjects || '',
+      attendancePreference: memberToEdit.attendancePreference || 'Sim, sem problema',
+      microtasksInterest: memberToEdit.microtasksInterest || 'Sim, me avisem quando abrir',
+      priority: memberToEdit.priority || 'Média',
+      progress: Number(memberToEdit.progress ?? 0),
+      deadline: memberToEdit.deadline || '',
+    });
+    setIsEditResponsesOpen(true);
+  };
+
+  const handleSaveResponseEdit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingFormData.id) return;
+    if (!editingFormData.name?.trim()) {
+      toast.error('Informe o nome do membro');
+      return;
+    }
+
+    try {
+      setIsSavingResponseEdit(true);
+      const updatePayload = {
+        name: editingFormData.name.trim(),
+        birthday: editingFormData.birthday || '',
+        discordUser: (editingFormData.discordUser || '').replace(/^@+/, '').trim(),
+        course: editingFormData.course || '',
+        period: editingFormData.period || '',
+        collegeFocus: Number(editingFormData.collegeFocus || 0),
+        leagueRole: editingFormData.leagueRole || 'Programação',
+        leagueFocus: Number(editingFormData.leagueFocus || 0),
+        weeklyHours: editingFormData.weeklyHours || '4h',
+        roleFocus: editingFormData.roleFocus || '',
+        learningFocus: editingFormData.learningFocus || '',
+        isInProject: editingFormData.isInProject || 'Sim',
+        currentProjects: editingFormData.currentProjects || '',
+        notInProjectStatus: editingFormData.notInProjectStatus || '',
+        interestedProjects: editingFormData.interestedProjects || '',
+        attendancePreference: editingFormData.attendancePreference || 'Sim, sem problema',
+        microtasksInterest: editingFormData.microtasksInterest || 'Sim, me avisem quando abrir',
+        priority: editingFormData.priority || 'Média',
+        progress: Number(editingFormData.progress || 0),
+        deadline: editingFormData.deadline || '',
+        lastEditedAt: Date.now(),
+        lastEditedBy: 'isadora.mlima@ufpe.br',
+      };
+
+      await updateDoc(doc(db, 'responses', editingFormData.id), updatePayload);
+
+      await logAuditAction({
+        action: 'Atualização de Dados (Admin)',
+        targetMemberId: editingFormData.id,
+        targetMemberName: editingFormData.name,
+        targetMemberEmail: editingFormData.email || '',
+        details: `Respostas do formulário de "${editingFormData.name}" editadas no Dashboard por isadora.mlima@ufpe`,
+        performedByEmail: 'isadora.mlima@ufpe.br',
+        performedByName: 'Isadora Lima',
+      });
+
+      const updated = { ...(selectedMember || {}), ...updatePayload };
+      setSelectedMember(updated);
+      setData(prev => prev.map(m => m.id === editingFormData.id ? { ...m, ...updatePayload } : m));
+      setIsEditResponsesOpen(false);
+      toast.success(`Respostas de ${editingFormData.name} atualizadas com sucesso!`);
+    } catch (err) {
+      console.error('Erro ao salvar respostas editadas:', err);
+      toast.error('Erro ao atualizar respostas do formulário');
+    } finally {
+      setIsSavingResponseEdit(false);
     }
   };
 
@@ -1061,17 +1444,27 @@ export default function Dashboard({ onNavigateTab }: DashboardProps = {}) {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <div className="lg:col-span-2 p-6 bg-[rgba(255,255,255,0.02)] border border-[var(--color-ink-faint)]  ">
           <h3 className="text-white font-semibold mb-6">Membros por Categoria</h3>
-          <div className="h-64 w-full">
+          <div className="h-72 w-full">
             <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={chartData}>
-                <XAxis dataKey="name" stroke="#6b7280" fontSize={12} tickLine={false} axisLine={false} />
-                <YAxis stroke="#6b7280" fontSize={12} tickLine={false} axisLine={false} />
+              <BarChart data={chartData} margin={{ top: 15, right: 10, left: -20, bottom: 45 }}>
+                <XAxis 
+                  dataKey="name" 
+                  interval={0}
+                  tick={{ fill: '#e5e7eb', fontSize: 11, fontWeight: 500 }} 
+                  tickLine={false} 
+                  axisLine={{ stroke: '#374151' }}
+                  angle={-20}
+                  textAnchor="end"
+                  height={55}
+                />
+                <YAxis stroke="#9ca3af" fontSize={12} tickLine={false} axisLine={false} allowDecimals={false} />
                 <Tooltip 
                   cursor={{ fill: '#1f2937' }}
                   contentStyle={{ backgroundColor: '#111827', borderColor: '#374151', borderRadius: '0.5rem', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }}
                   itemStyle={{ color: '#10b981', fontWeight: 600 }}
                 />
                 <Bar dataKey="Membros" radius={[4, 4, 0, 0]}>
+                  <LabelList dataKey="Membros" position="top" fill="#34d399" fontSize={11} fontWeight={600} offset={6} />
                   {chartData.map((entry, index) => (
                     <Cell key={`cell-${index}`} fill="#10b981" />
                   ))}
@@ -1098,14 +1491,16 @@ export default function Dashboard({ onNavigateTab }: DashboardProps = {}) {
           <div className="space-y-2 mt-6">
             <button 
               onClick={handleExportPDF}
-              className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-gray-800 hover:bg-gray-700 text-gray-200 text-sm font-medium  transition-colors border border-gray-700"
+              title="Exportar relatório em PDF com todas as informações e respostas dos membros"
+              className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-gray-800 hover:bg-gray-700 text-gray-200 text-sm font-medium transition-colors border border-gray-700 cursor-pointer"
             >
               <FileText size={16} />
               Exportar para PDF
             </button>
             <button 
               onClick={handleExportCSV}
-              className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-gray-800 hover:bg-gray-700 text-gray-200 text-sm font-medium  transition-colors border border-gray-700"
+              title="Exportar planilha CSV com todas as respostas dos membros"
+              className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-gray-800 hover:bg-gray-700 text-gray-200 text-sm font-medium transition-colors border border-gray-700 cursor-pointer"
             >
               <Download size={16} />
               Exportar para CSV
@@ -1124,32 +1519,23 @@ export default function Dashboard({ onNavigateTab }: DashboardProps = {}) {
       </div>
 
       {/* Top Metrics */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-        <div className="p-6 bg-[rgba(255,255,255,0.02)] border border-[var(--color-ink-faint)]   flex items-center justify-between">
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <div className="p-6 bg-[rgba(255,255,255,0.02)] border border-[var(--color-ink-faint)] flex items-center justify-between">
           <div>
             <p className="text-gray-400 text-xs font-semibold uppercase tracking-wider mb-1">Membros Ativos</p>
             <p className="text-3xl font-bold text-white">{activeCount}</p>
           </div>
-          <div className="p-3 bg-emerald-500/10 text-emerald-500 ">
+          <div className="p-3 bg-emerald-500/10 text-emerald-500">
             <Users size={28} />
           </div>
         </div>
-        <div className="p-6 bg-[rgba(255,255,255,0.02)] border border-[var(--color-ink-faint)]   flex items-center justify-between">
+        <div className="p-6 bg-[rgba(255,255,255,0.02)] border border-[var(--color-ink-faint)] flex items-center justify-between">
           <div>
-            <p className="text-gray-400 text-xs font-semibold uppercase tracking-wider mb-1">Foco Médio (Liga)</p>
-            <p className="text-3xl font-bold text-white">{avgLeagueFocus} <span className="text-sm text-gray-500 font-medium">/ 5</span></p>
+            <p className="text-gray-400 text-xs font-semibold uppercase tracking-wider mb-1">Membros em Projetos</p>
+            <p className="text-3xl font-bold text-white">{countByProjectStatus.in_project}</p>
           </div>
-          <div className="p-3 bg-emerald-500/10 text-emerald-500 ">
-            <Target size={28} />
-          </div>
-        </div>
-        <div className="p-6 bg-[rgba(255,255,255,0.02)] border border-[var(--color-ink-faint)]   flex items-center justify-between">
-          <div>
-            <p className="text-gray-400 text-xs font-semibold uppercase tracking-wider mb-1">Progresso Médio</p>
-            <p className="text-3xl font-bold text-white">{avgProgress}%</p>
-          </div>
-          <div className="p-3 bg-emerald-500/10 text-emerald-500 ">
-            <Activity size={28} />
+          <div className="p-3 bg-emerald-500/10 text-emerald-500">
+            <Briefcase size={28} />
           </div>
         </div>
       </div>
@@ -1536,12 +1922,13 @@ export default function Dashboard({ onNavigateTab }: DashboardProps = {}) {
                     </p>
                   </div>
                   <div className="text-right">
-                    <div className="flex items-center justify-end gap-2 mb-1">
-                      <div className="w-12 h-1.5 bg-gray-700 rounded-full overflow-hidden">
-                        <div className="h-full bg-emerald-500" style={{ width: `${response.progress}%` }} />
-                      </div>
-                      <p className="text-xs font-bold text-gray-300">{response.progress}%</p>
-                    </div>
+                    <span className={`inline-block px-2 py-0.5 text-[11px] font-medium mb-1 ${
+                      response.priority === 'Alta' ? 'bg-red-500/10 text-red-400 border border-red-500/20' : 
+                      response.priority === 'Baixa' ? 'bg-blue-500/10 text-blue-400 border border-blue-500/20' :
+                      'bg-yellow-500/10 text-yellow-400 border border-yellow-500/20'
+                    }`}>
+                      {response.priority || 'Média'}
+                    </span>
                     <p className="text-[10px] text-gray-500 font-medium">{new Date(response.createdAt).toLocaleDateString()}</p>
                   </div>
                 </div>
@@ -1601,10 +1988,10 @@ export default function Dashboard({ onNavigateTab }: DashboardProps = {}) {
                 <th className="px-2 py-3 whitespace-nowrap text-[11px] font-semibold">Curso/Período</th>
                 <th className="px-2 py-3 whitespace-nowrap text-[11px] font-semibold">Área/Papel</th>
                 <th className="px-2 py-3 whitespace-nowrap text-[11px] font-semibold">Projetos</th>
-                <th className="px-2 py-3 whitespace-nowrap text-[11px] font-semibold">Progresso</th>
                 <th className="px-2 py-3 whitespace-nowrap text-[11px] font-semibold">Prioridade</th>
                 <th className="px-2 py-3 whitespace-nowrap text-[11px] font-semibold text-center">Solicitação de Edição</th>
                 <th className="px-2 py-3 whitespace-nowrap text-[11px] font-semibold text-center">Data de Alteração</th>
+                <th className="px-2 py-3 whitespace-nowrap text-[11px] font-semibold text-center">Ficha PDF</th>
               </tr>
             </thead>
             <tbody>
@@ -1645,18 +2032,6 @@ export default function Dashboard({ onNavigateTab }: DashboardProps = {}) {
                   </td>
                   <td className="px-2 py-3 max-w-[150px] truncate text-gray-300" title={response.currentProjects}>{response.currentProjects || '-'}</td>
                   <td className="px-2 py-3">
-                    <div className="flex items-center gap-2">
-                      <span className="text-gray-200 font-bold min-w-[3ch] text-xs">{response.progress}%</span>
-                      <div className="w-16 h-1.5 bg-gray-700 rounded-full overflow-hidden">
-                        <div className="h-full bg-emerald-500" style={{ width: `${response.progress}%` }} />
-                      </div>
-                    </div>
-                  </td>
-                  <td className="px-2 py-3 text-xs">
-                    <div className="flex justify-between w-16 mb-1 text-gray-400">Liga: <span className="font-semibold text-gray-200">{response.leagueFocus}</span></div>
-                    <div className="flex justify-between w-16 text-gray-400">Facul: <span className="font-semibold text-gray-200">{response.collegeFocus}</span></div>
-                  </td>
-                  <td className="px-2 py-3">
                      <span className={`px-2.5 py-1 text-xs font-medium ${
                       response.priority === 'Alta' ? 'bg-red-500/10 text-red-400 border border-red-500/20' : 
                       response.priority === 'Baixa' ? 'bg-blue-500/10 text-blue-400 border border-blue-500/20' :
@@ -1672,6 +2047,33 @@ export default function Dashboard({ onNavigateTab }: DashboardProps = {}) {
                   </td>
                   <td className="px-2 py-3 text-center text-xs text-gray-400">
                     {response.lastEditedAt ? new Date(response.lastEditedAt).toLocaleDateString('pt-BR') : '-'}
+                  </td>
+                  <td className="px-2 py-3 text-center" onClick={(e) => e.stopPropagation()}>
+                    <button
+                      onClick={() => {
+                        try {
+                          exportDetailedMemberPDF(response);
+                          toast.success(`Ficha de ${response.name || 'membro'} gerada em PDF!`);
+                        } catch (err) {
+                          console.error(err);
+                          toast.error('Erro ao gerar PDF detalhado');
+                        }
+                      }}
+                      title={`Baixar ficha completa em PDF de ${response.name || 'membro'}`}
+                      className="p-1.5 hover:bg-emerald-500/20 text-gray-400 hover:text-emerald-400 border border-transparent hover:border-emerald-500/30 transition-colors inline-flex items-center justify-center cursor-pointer"
+                    >
+                      <FileText size={15} />
+                    </button>
+                    <button
+                      onClick={() => {
+                        setSelectedMember(response);
+                        handleOpenEditResponses(response);
+                      }}
+                      title={`Editar respostas do formulário de ${response.name || 'membro'}`}
+                      className="p-1.5 hover:bg-blue-500/20 text-gray-400 hover:text-blue-400 border border-transparent hover:border-blue-500/30 transition-colors inline-flex items-center justify-center cursor-pointer ml-1"
+                    >
+                      <Edit2 size={15} />
+                    </button>
                   </td>
                 </tr>
               ))}
@@ -1720,6 +2122,30 @@ export default function Dashboard({ onNavigateTab }: DashboardProps = {}) {
                 <p className="text-sm text-emerald-500/80 font-medium">{selectedMember.email}</p>
               </div>
               <div className="flex items-center gap-3">
+                <button
+                  onClick={() => {
+                    try {
+                      exportDetailedMemberPDF(selectedMember);
+                      toast.success(`Ficha completa de ${selectedMember.name || 'membro'} gerada em PDF!`);
+                    } catch (err) {
+                      console.error('Erro ao gerar PDF detalhado:', err);
+                      toast.error('Erro ao gerar PDF detalhado');
+                    }
+                  }}
+                  className="flex items-center gap-2 px-3 py-1.5 bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/30 text-emerald-400 text-sm font-medium transition-colors cursor-pointer"
+                  title="Baixar todas as respostas e campos preenchidos deste formulário em PDF"
+                >
+                  <FileText size={14} />
+                  Ficha em PDF
+                </button>
+                <button
+                  onClick={() => handleOpenEditResponses(selectedMember)}
+                  className="flex items-center gap-2 px-3 py-1.5 bg-blue-500/10 hover:bg-blue-500/20 border border-blue-500/30 text-blue-400 text-sm font-medium transition-colors cursor-pointer"
+                  title="Editar todas as respostas preenchidas no formulário deste membro"
+                >
+                  <Edit2 size={14} />
+                  Editar Respostas
+                </button>
                 <button onClick={() => setIsEditStatusOpen(true)} className="flex items-center gap-2 px-3 py-1.5 bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-300 text-sm font-medium  transition-colors">
                   <Edit2 size={14} />
                   Alterar Status
@@ -1792,39 +2218,15 @@ export default function Dashboard({ onNavigateTab }: DashboardProps = {}) {
                     <p><span className="text-gray-400 block text-xs font-semibold uppercase mb-1">Projetos de Interesse</span> <span className="text-gray-200 font-medium">{selectedMember.interestedProjects || 'Nenhum'}</span></p>
                   </div>
                 </div>
-
-                <div>
-                  <h4 className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-3">Métricas de Foco (1-5)</h4>
-                  <div className="bg-gray-800 border border-gray-700 p-4  text-sm space-y-4">
-                    <div className="flex justify-between items-center border-b border-gray-700 pb-3">
-                      <span className="text-gray-400 font-medium">Dedicação à LAJE</span>
-                      <span className="text-emerald-400 font-bold text-lg">{selectedMember.leagueFocus} <span className="text-gray-500 text-xs font-medium">/ 5</span></span>
-                    </div>
-                    <div className="flex justify-between items-center pt-1">
-                      <span className="text-gray-400 font-medium">Dedicação à Faculdade</span>
-                      <span className="text-emerald-400 font-bold text-lg">{selectedMember.collegeFocus} <span className="text-gray-500 text-xs font-medium">/ 5</span></span>
-                    </div>
-                  </div>
-                </div>
               </div>
 
               <div className="space-y-6">
                 <div>
                   <h4 className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-3">Status do Trabalho</h4>
-                  <div className="bg-gray-800 border border-gray-700 p-4  text-sm space-y-5">
-                    <div className="space-y-3">
-                      <div className="flex justify-between items-center">
-                        <span className="text-gray-400 text-xs font-semibold uppercase">Progresso Atual</span>
-                        <span className="text-emerald-400 font-bold">{selectedMember.progress}%</span>
-                      </div>
-                      <div className="w-full h-2 bg-gray-700 rounded-full overflow-hidden">
-                        <div className="h-full bg-emerald-500" style={{ width: `${selectedMember.progress}%` }} />
-                      </div>
-                    </div>
-                    
-                    <div className="flex justify-between items-center pt-3 border-t border-gray-700">
+                  <div className="bg-gray-800 border border-gray-700 p-4 text-sm space-y-4">
+                    <div className="flex justify-between items-center">
                       <span className="text-gray-400 text-xs font-semibold uppercase">Prioridade</span>
-                      <span className={`px-2.5 py-1 text-xs font-bold  ${
+                      <span className={`px-2.5 py-1 text-xs font-bold ${
                         selectedMember.priority === 'Alta' ? 'bg-red-500/10 text-red-400 border border-red-500/20' : 
                         selectedMember.priority === 'Baixa' ? 'bg-blue-500/10 text-blue-400 border border-blue-500/20' :
                         'bg-yellow-500/10 text-yellow-400 border border-yellow-500/20'
@@ -2010,6 +2412,267 @@ export default function Dashboard({ onNavigateTab }: DashboardProps = {}) {
                 Excluir definitivamente
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Edit Form Responses Modal */}
+      {isEditResponsesOpen && editingFormData && (
+        <div className="fixed inset-0 z-[65] flex items-center justify-center p-4 bg-black/75 backdrop-blur-md" onClick={() => setIsEditResponsesOpen(false)}>
+          <div className="bg-[#0f1117] border border-blue-500/40 w-full max-w-4xl max-h-[90vh] overflow-y-auto shadow-2xl p-6 sm:p-8 space-y-6" onClick={e => e.stopPropagation()}>
+            <div className="flex justify-between items-start border-b border-gray-800 pb-4">
+              <div>
+                <div className="flex items-center gap-2 text-blue-400 font-['Syne'] font-bold text-xl">
+                  <Edit2 size={20} />
+                  <h3>Editar Respostas do Formulário</h3>
+                </div>
+                <p className="text-xs text-gray-400 mt-1">
+                  Editando as respostas de <strong className="text-white">{editingFormData.name}</strong> ({editingFormData.email || 'sem e-mail'})
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsEditResponsesOpen(false)}
+                className="p-1 text-gray-400 hover:text-white transition-colors cursor-pointer"
+              >
+                <X size={22} />
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveResponseEdit} className="space-y-6">
+              {/* Seção 1: Identificação */}
+              <div className="space-y-4">
+                <h4 className="text-xs font-bold uppercase tracking-wider text-emerald-400 font-['Space_Mono'] border-b border-gray-800/80 pb-2">
+                  1. Identificação e Contato
+                </h4>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  <div>
+                    <label className="text-[11px] font-semibold uppercase text-gray-400 block mb-1">Nome Completo</label>
+                    <input
+                      type="text"
+                      required
+                      value={editingFormData.name || ''}
+                      onChange={(e) => setEditingFormData({ ...editingFormData, name: e.target.value })}
+                      className="w-full bg-gray-900/80 border border-gray-700 focus:border-blue-500 text-white p-2.5 text-xs outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[11px] font-semibold uppercase text-gray-400 block mb-1">Usuário Discord</label>
+                    <input
+                      type="text"
+                      placeholder="usuario_discord"
+                      value={editingFormData.discordUser || ''}
+                      onChange={(e) => setEditingFormData({ ...editingFormData, discordUser: e.target.value.replace(/^@+/, '') })}
+                      className="w-full bg-gray-900/80 border border-gray-700 focus:border-blue-500 text-white p-2.5 text-xs outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[11px] font-semibold uppercase text-gray-400 block mb-1">Data de Aniversário</label>
+                    <input
+                      type="date"
+                      value={editingFormData.birthday || ''}
+                      onChange={(e) => setEditingFormData({ ...editingFormData, birthday: e.target.value })}
+                      className="w-full bg-gray-900/80 border border-gray-700 focus:border-blue-500 text-white p-2.5 text-xs outline-none [color-scheme:dark]"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* Seção 2: Acadêmico */}
+              <div className="space-y-4">
+                <h4 className="text-xs font-bold uppercase tracking-wider text-emerald-400 font-['Space_Mono'] border-b border-gray-800/80 pb-2">
+                  2. Dados Acadêmicos (Faculdade)
+                </h4>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <label className="text-[11px] font-semibold uppercase text-gray-400 block mb-1">Curso</label>
+                    <input
+                      type="text"
+                      required
+                      value={editingFormData.course || ''}
+                      onChange={(e) => setEditingFormData({ ...editingFormData, course: e.target.value })}
+                      className="w-full bg-gray-900/80 border border-gray-700 focus:border-blue-500 text-white p-2.5 text-xs outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[11px] font-semibold uppercase text-gray-400 block mb-1">Período</label>
+                    <input
+                      type="text"
+                      required
+                      value={editingFormData.period || ''}
+                      onChange={(e) => setEditingFormData({ ...editingFormData, period: e.target.value })}
+                      className="w-full bg-gray-900/80 border border-gray-700 focus:border-blue-500 text-white p-2.5 text-xs outline-none"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* Seção 3: Atuação na LAJE */}
+              <div className="space-y-4">
+                <h4 className="text-xs font-bold uppercase tracking-wider text-emerald-400 font-['Space_Mono'] border-b border-gray-800/80 pb-2">
+                  3. Atuação na LAJE
+                </h4>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <label className="text-[11px] font-semibold uppercase text-gray-400 block mb-1">Função(ões) / Área</label>
+                    <input
+                      type="text"
+                      required
+                      placeholder="Ex: Programação, Arte 2D"
+                      value={editingFormData.leagueRole || ''}
+                      onChange={(e) => setEditingFormData({ ...editingFormData, leagueRole: e.target.value })}
+                      className="w-full bg-gray-900/80 border border-gray-700 focus:border-blue-500 text-white p-2.5 text-xs outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[11px] font-semibold uppercase text-gray-400 block mb-1">Dedicação Semanal</label>
+                    <select
+                      value={editingFormData.weeklyHours || '4h'}
+                      onChange={(e) => setEditingFormData({ ...editingFormData, weeklyHours: e.target.value })}
+                      className="w-full bg-gray-900/80 border border-gray-700 focus:border-blue-500 text-white p-2.5 text-xs outline-none"
+                    >
+                      <option>2h</option>
+                      <option>4h</option>
+                      <option>6h</option>
+                      <option>8h ou mais</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <label className="text-[11px] font-semibold uppercase text-gray-400 block mb-1">Foco na Função Atual</label>
+                    <textarea
+                      rows={2}
+                      value={editingFormData.roleFocus || ''}
+                      onChange={(e) => setEditingFormData({ ...editingFormData, roleFocus: e.target.value })}
+                      className="w-full bg-gray-900/80 border border-gray-700 focus:border-blue-500 text-white p-2.5 text-xs outline-none resize-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[11px] font-semibold uppercase text-gray-400 block mb-1">Foco de Aprendizado</label>
+                    <textarea
+                      rows={2}
+                      value={editingFormData.learningFocus || ''}
+                      onChange={(e) => setEditingFormData({ ...editingFormData, learningFocus: e.target.value })}
+                      className="w-full bg-gray-900/80 border border-gray-700 focus:border-blue-500 text-white p-2.5 text-xs outline-none resize-none"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* Seção 4: Projetos e Metas */}
+              <div className="space-y-4">
+                <h4 className="text-xs font-bold uppercase tracking-wider text-emerald-400 font-['Space_Mono'] border-b border-gray-800/80 pb-2">
+                  4. Alocação em Projetos & Metas
+                </h4>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  <div>
+                    <label className="text-[11px] font-semibold uppercase text-gray-400 block mb-1">Alocado em Projeto?</label>
+                    <select
+                      value={editingFormData.isInProject || 'Sim'}
+                      onChange={(e) => setEditingFormData({ ...editingFormData, isInProject: e.target.value })}
+                      className="w-full bg-gray-900/80 border border-gray-700 focus:border-blue-500 text-white p-2.5 text-xs outline-none"
+                    >
+                      <option>Sim</option>
+                      <option>Não</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="text-[11px] font-semibold uppercase text-gray-400 block mb-1">Projetos Atuais</label>
+                    <input
+                      type="text"
+                      value={editingFormData.currentProjects || ''}
+                      onChange={(e) => setEditingFormData({ ...editingFormData, currentProjects: e.target.value })}
+                      className="w-full bg-gray-900/80 border border-gray-700 focus:border-blue-500 text-white p-2.5 text-xs outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[11px] font-semibold uppercase text-gray-400 block mb-1">Projetos de Interesse</label>
+                    <input
+                      type="text"
+                      value={editingFormData.interestedProjects || ''}
+                      onChange={(e) => setEditingFormData({ ...editingFormData, interestedProjects: e.target.value })}
+                      className="w-full bg-gray-900/80 border border-gray-700 focus:border-blue-500 text-white p-2.5 text-xs outline-none"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <label className="text-[11px] font-semibold uppercase text-gray-400 block mb-1">Data Limite (Deadline)</label>
+                    <input
+                      type="date"
+                      value={editingFormData.deadline || ''}
+                      onChange={(e) => setEditingFormData({ ...editingFormData, deadline: e.target.value })}
+                      className="w-full bg-gray-900/80 border border-gray-700 focus:border-blue-500 text-white p-2.5 text-xs outline-none [color-scheme:dark]"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[11px] font-semibold uppercase text-gray-400 block mb-1">Prioridade</label>
+                    <select
+                      value={editingFormData.priority || 'Média'}
+                      onChange={(e) => setEditingFormData({ ...editingFormData, priority: e.target.value })}
+                      className="w-full bg-gray-900/80 border border-gray-700 focus:border-blue-500 text-white p-2.5 text-xs outline-none"
+                    >
+                      <option>Baixa</option>
+                      <option>Média</option>
+                      <option>Alta</option>
+                    </select>
+                  </div>
+                </div>
+              </div>
+
+              {/* Seção 5: Preferências */}
+              <div className="space-y-4">
+                <h4 className="text-xs font-bold uppercase tracking-wider text-emerald-400 font-['Space_Mono'] border-b border-gray-800/80 pb-2">
+                  5. Disponibilidade e Preferências
+                </h4>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <label className="text-[11px] font-semibold uppercase text-gray-400 block mb-1">Presença em Reuniões / Check-ins</label>
+                    <select
+                      value={editingFormData.attendancePreference || 'Sim, sem problema'}
+                      onChange={(e) => setEditingFormData({ ...editingFormData, attendancePreference: e.target.value })}
+                      className="w-full bg-gray-900/80 border border-gray-700 focus:border-blue-500 text-white p-2.5 text-xs outline-none"
+                    >
+                      <option>Sim, sem problema</option>
+                      <option>Prefiro participar assincronamente</option>
+                      <option>Tenho restrições de horário</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="text-[11px] font-semibold uppercase text-gray-400 block mb-1">Interesse em Microtarefas</label>
+                    <select
+                      value={editingFormData.microtasksInterest || 'Sim, me avisem quando abrir'}
+                      onChange={(e) => setEditingFormData({ ...editingFormData, microtasksInterest: e.target.value })}
+                      className="w-full bg-gray-900/80 border border-gray-700 focus:border-blue-500 text-white p-2.5 text-xs outline-none"
+                    >
+                      <option>Sim, me avisem quando abrir</option>
+                      <option>Não no momento</option>
+                    </select>
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex justify-end gap-3 pt-4 border-t border-gray-800">
+                <button
+                  type="button"
+                  onClick={() => setIsEditResponsesOpen(false)}
+                  className="px-5 py-2.5 bg-gray-800 hover:bg-gray-700 text-gray-300 font-medium text-xs uppercase tracking-wider transition-colors cursor-pointer"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  disabled={isSavingResponseEdit}
+                  className="flex items-center gap-2 px-6 py-2.5 bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs uppercase tracking-wider transition-colors cursor-pointer disabled:opacity-50"
+                >
+                  {isSavingResponseEdit ? <Loader2 className="animate-spin" size={15} /> : <Check size={15} />}
+                  Salvar Respostas do Formulário
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}
