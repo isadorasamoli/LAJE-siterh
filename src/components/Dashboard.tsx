@@ -1527,7 +1527,7 @@ export default function Dashboard({ onNavigateTab }: DashboardProps = {}) {
                 )}
               </div>
             ) : (
-              filteredData.sort((a, b) => b.createdAt - a.createdAt).slice(0, 5).map(response => (
+              [...filteredData].sort((a, b) => b.createdAt - a.createdAt).map(response => (
                 <div key={response.id} onClick={() => setSelectedMember(response)} className="p-4 bg-gray-800/50 border border-gray-700/50 flex justify-between items-center cursor-pointer hover:-translate-y-1 hover:shadow-lg hover:shadow-emerald-900/20 hover:border-emerald-500/50 hover:bg-gray-800 transition-all duration-300 group">
                   <div>
                     <p className="text-sm font-semibold text-white group-hover:text-emerald-400 transition-colors">{response.name}</p>
