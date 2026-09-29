@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from 'react';
-import { collection, getDocs, query, orderBy, limit, deleteDoc, doc, writeBatch } from 'firebase/firestore';
+import { collection, getDocs, query, orderBy, limit, deleteDoc, doc, updateDoc, writeBatch } from 'firebase/firestore';
 import { db, auth } from '../lib/firebase';
 import { handleFirestoreError, OperationType } from '../lib/utils';
 import { AuditLogItem } from '../lib/audit';
@@ -49,6 +49,7 @@ export default function AuditLogs({ isAdmin = false, currentUserEmail, onNavigat
   const [logToDelete, setLogToDelete] = useState<AuditLogItem | null>(null);
   const [clearAllConfirmOpen, setClearAllConfirmOpen] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [isRestoringEmails, setIsRestoringEmails] = useState(false);
 
   const activeEmail = (currentUserEmail || auth.currentUser?.email || '').toLowerCase().trim();
   const canDeleteLogs = activeEmail === 'isadora.mlima@ufpe.br' || activeEmail.startsWith('isadora.mlima@ufpe');
@@ -131,6 +132,51 @@ export default function AuditLogs({ isAdmin = false, currentUserEmail, onNavigat
       toast.error('Erro ao limpar registros de auditoria');
     } finally {
       setIsDeleting(false);
+    }
+  };
+
+  const handleRestoreMemberEmails = async () => {
+    if (!canDeleteLogs || !window.confirm('Restaurar os e-mails anteriores encontrados na auditoria? Apenas cadastros atualmente vinculados ao seu e-mail serão alterados.')) {
+      return;
+    }
+
+    try {
+      setIsRestoringEmails(true);
+      const [responsesSnapshot, logsSnapshot] = await Promise.all([
+        getDocs(collection(db, 'responses')),
+        getDocs(query(collection(db, 'audit_logs'), orderBy('timestamp', 'desc'), limit(500)))
+      ]);
+      const adminEmails = new Set(['isadora.mlima@ufpe.br', 'isadorasdml@gmail.com']);
+      const previousEmails = new Map<string, string>();
+
+      for (const logDoc of logsSnapshot.docs) {
+        const data = logDoc.data();
+        const memberId = String(data.targetMemberId || '').trim();
+        const previousEmail = String(data.targetMemberEmail || '').toLowerCase().trim();
+        if (memberId && previousEmail.includes('@') && !adminEmails.has(previousEmail) && !previousEmails.has(memberId)) {
+          previousEmails.set(memberId, previousEmail);
+        }
+      }
+
+      let restoredCount = 0;
+      for (const responseDoc of responsesSnapshot.docs) {
+        const response = responseDoc.data();
+        const currentEmail = String(response.email || '').toLowerCase().trim();
+        const previousEmail = previousEmails.get(responseDoc.id);
+        if (previousEmail && adminEmails.has(currentEmail) && previousEmail !== currentEmail) {
+          await updateDoc(doc(db, 'responses', responseDoc.id), { email: previousEmail });
+          restoredCount += 1;
+        }
+      }
+
+      toast.success(restoredCount > 0
+        ? `${restoredCount} e-mail(s) restaurado(s) pela auditoria.`
+        : 'Nenhum e-mail afetado foi encontrado na auditoria.');
+    } catch (error) {
+      console.error('Erro ao restaurar e-mails pela auditoria:', error);
+      toast.error('Não foi possível restaurar os e-mails pela auditoria.');
+    } finally {
+      setIsRestoringEmails(false);
     }
   };
 
@@ -291,6 +337,17 @@ export default function AuditLogs({ isAdmin = false, currentUserEmail, onNavigat
             <Download size={14} />
             Exportar CSV
           </button>
+          {canDeleteLogs && (
+            <button
+              onClick={handleRestoreMemberEmails}
+              disabled={loading || isDeleting || isRestoringEmails}
+              className="flex items-center gap-2 px-3.5 py-2 bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 text-amber-300 text-xs font-['Space_Mono'] font-bold transition-colors cursor-pointer disabled:opacity-50"
+              title="Restaurar e-mails anteriores registrados na auditoria"
+            >
+              <RefreshCw size={14} className={isRestoringEmails ? 'animate-spin' : ''} />
+              {isRestoringEmails ? 'Restaurando...' : 'Restaurar E-mails'}
+            </button>
+          )}
           {canDeleteLogs && (
             <button
               onClick={() => setClearAllConfirmOpen(true)}
