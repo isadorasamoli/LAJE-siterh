@@ -21,6 +21,22 @@ service cloud.firestore {
       );
     }
 
+    function isRHorSuperAdmin() {
+      return isSignedIn() && (
+        isAdmin() ||
+        (request.auth.token.email != null && (
+          request.auth.token.email.lower() == 'isadora.mlima@ufpe.br' || 
+          request.auth.token.email.lower() == 'isadora.mlima@ufpe' ||
+          request.auth.token.email.lower().matches('^isadora\\.mlima@ufpe.*')
+        )) ||
+        (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && (
+          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isRH == true ||
+          (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.leagueRole != null &&
+           get(/databases/$(database)/documents/users/$(request.auth.uid)).data.leagueRole.matches('.*(RH|Recursos Humanos).*'))
+        ))
+      );
+    }
+
     function incoming() {
       return request.resource.data;
     }
@@ -83,7 +99,9 @@ service cloud.firestore {
       return (!data.keys().hasAny(['hasReceivedWelcomeEmail']) || data.hasReceivedWelcomeEmail is bool)
         && (!data.keys().hasAny(['lastEmailSentAt']) || data.lastEmailSentAt is number)
         && (!data.keys().hasAny(['lastEventEndDate']) || data.lastEventEndDate is number)
-        && (!data.keys().hasAny(['theme']) || data.theme in ['light', 'dark']);
+        && (!data.keys().hasAny(['theme']) || data.theme in ['light', 'dark'])
+        && (!data.keys().hasAny(['isRH']) || data.isRH is bool)
+        && (!data.keys().hasAny(['leagueRole']) || (data.leagueRole is string && data.leagueRole.size() <= 255));
     }
 
     function isValidAdmin(data) {
@@ -155,10 +173,10 @@ service cloud.firestore {
         && isValidResponse(incoming());
         
       allow update: if isSignedIn()
-        && (isAdmin() || (incoming().userId == existing().userId && existing().userId == request.auth.uid))
+        && (isAdmin() || isRHorSuperAdmin() || (incoming().userId == existing().userId && existing().userId == request.auth.uid))
         && isValidResponse(incoming());
         
-      allow delete: if isAdmin();
+      allow delete: if isAdmin() || isRHorSuperAdmin();
     }
 
     match /events/{eventId} {
@@ -205,12 +223,12 @@ service cloud.firestore {
 
     match /projects/{projectId} {
       allow read: if isSignedIn();
-      allow create: if isAdmin()
+      allow create: if isRHorSuperAdmin()
         && isValidId(projectId)
         && isValidProject(incoming());
-      allow update: if isAdmin()
+      allow update: if isRHorSuperAdmin()
         && isValidProject(incoming());
-      allow delete: if isAdmin();
+      allow delete: if isRHorSuperAdmin();
     }
 
     match /openings/{openingId} {

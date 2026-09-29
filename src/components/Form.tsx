@@ -34,7 +34,8 @@ export default function Form({ user, token }: FormProps) {
   const [selectedMemberId, setSelectedMemberId] = useState<string>('me');
   const [fetchingExisting, setFetchingExisting] = useState(true);
 
-  const isSuperAdmin = user?.email?.toLowerCase().trim() === 'isadora.mlima@ufpe.br';
+  const userEmail = user?.email?.toLowerCase().trim() || '';
+  const isSuperAdmin = userEmail === 'isadora.mlima@ufpe.br' || userEmail === 'isadorasdml@gmail.com' || userEmail.startsWith('isadora.mlima@ufpe');
 
   const [formData, setFormData] = useState({
     name: user?.displayName || '',
@@ -411,7 +412,7 @@ export default function Form({ user, token }: FormProps) {
   return (
     <form onSubmit={handleSubmit} className="w-full max-w-3xl mx-auto space-y-8 pb-12">
       {isSuperAdmin && (
-        <div className="p-5 bg-gradient-to-r from-emerald-950/40 to-slate-900 border border-emerald-500/40 shadow-lg space-y-3 mb-6">
+        <div className="w-full max-w-full p-5 bg-gradient-to-r from-emerald-950/40 to-slate-900 border border-emerald-500/40 shadow-lg space-y-3 mb-6 overflow-hidden box-border">
           <div className="flex items-center justify-between flex-wrap gap-2">
             <div className="flex items-center gap-2">
               <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse"></span>
@@ -426,20 +427,20 @@ export default function Form({ user, token }: FormProps) {
           <p className="text-xs text-gray-300 font-medium">
             Você tem privilégios totais para editar qualquer resposta enviada no formulário. Selecione abaixo a resposta do membro que deseja alterar:
           </p>
-          <div className="flex flex-col sm:flex-row sm:items-center gap-3 pt-1">
-            <label className="text-xs font-semibold uppercase text-emerald-400 font-['Space_Mono'] whitespace-nowrap">
+          <div className="flex flex-col sm:flex-row sm:items-center gap-3 pt-1 w-full min-w-0 max-w-full">
+            <label className="text-xs font-semibold uppercase text-emerald-400 font-['Space_Mono'] whitespace-nowrap shrink-0">
               Membro selecionado:
             </label>
             <select
               value={selectedMemberId}
               onChange={(e) => handleSwitchMember(e.target.value)}
-              className="flex-1 bg-[#121216] border border-emerald-500/50 text-emerald-200 text-xs p-2.5 outline-none font-['Space_Mono'] cursor-pointer focus:border-emerald-400"
+              className="flex-1 w-full min-w-0 max-w-full bg-[#121216] border border-emerald-500/50 text-emerald-200 text-xs p-2.5 outline-none font-['Space_Mono'] cursor-pointer focus:border-emerald-400 truncate"
             >
               <option value="me">Minha Resposta ({user?.email})</option>
               {allResponses.length > 0 && (
                 <optgroup label={`Respostas dos Membros Cadastrados (${allResponses.length})`}>
                   {allResponses.map((r) => (
-                    <option key={r.id} value={r.id}>
+                    <option key={r.id} value={r.id} className="bg-[#121216] text-white">
                       {r.name || 'Sem nome'} — {r.leagueRole || 'Sem área'} ({r.email || 'sem e-mail'})
                     </option>
                   ))}
@@ -683,7 +684,7 @@ export default function Form({ user, token }: FormProps) {
               value={formData.weeklyHours} 
               onChange={handleChange} 
               disabled={isReadOnly}
-              className={`w-full bg-transparent border border-[var(--color-ink-faint)] focus:border-[var(--color-accent)] text-[var(--color-ink)] p-3 outline-none transition-all cursor-pointer ${isReadOnly ? 'opacity-50' : ''}`}
+              className={`w-full max-w-full truncate bg-transparent border border-[var(--color-ink-faint)] focus:border-[var(--color-accent)] text-[var(--color-ink)] p-3 outline-none transition-all cursor-pointer ${isReadOnly ? 'opacity-50' : ''}`}
             >
               <option className="bg-gray-900 text-gray-200" value="2h">2h</option>
               <option className="bg-gray-900 text-gray-200" value="4h">4h</option>
@@ -783,7 +784,7 @@ export default function Form({ user, token }: FormProps) {
                 value={formData.notInProjectStatus}
                 onChange={handleChange}
                 disabled={isReadOnly}
-                className={`w-full bg-[#161619] border border-[var(--color-ink-faint)] text-xs text-gray-200 p-2.5 outline-none font-['Space_Mono'] ${isReadOnly ? 'opacity-50' : ''}`}
+                className={`w-full max-w-full truncate bg-[#161619] border border-[var(--color-ink-faint)] text-xs text-gray-200 p-2.5 outline-none font-['Space_Mono'] ${isReadOnly ? 'opacity-50' : ''}`}
               >
                 <option value="Quero entrar em um projeto e estou procurando">Quero entrar em um projeto e estou procurando</option>
                 <option value="Quero entrar, mas não sei como nem com quem falar">Quero entrar, mas não sei como nem com quem falar</option>
@@ -806,7 +807,7 @@ export default function Form({ user, token }: FormProps) {
               value={formData.attendancePreference}
               onChange={handleChange}
               disabled={isReadOnly}
-              className={`w-full bg-[#161619] border border-[var(--color-ink-faint)] text-xs text-gray-200 p-2.5 outline-none font-['Space_Mono'] ${isReadOnly ? 'opacity-50' : ''}`}
+              className={`w-full max-w-full truncate bg-[#161619] border border-[var(--color-ink-faint)] text-xs text-gray-200 p-2.5 outline-none font-['Space_Mono'] ${isReadOnly ? 'opacity-50' : ''}`}
             >
               <option value="Sim, sem problema">Sim, sem problema</option>
               <option value="Dá, mas depende do dia e do horário">Dá, mas depende do dia e do horário</option>
@@ -823,7 +824,7 @@ export default function Form({ user, token }: FormProps) {
               value={formData.microtasksInterest}
               onChange={handleChange}
               disabled={isReadOnly}
-              className={`w-full bg-[#161619] border border-[var(--color-ink-faint)] text-xs text-gray-200 p-2.5 outline-none font-['Space_Mono'] ${isReadOnly ? 'opacity-50' : ''}`}
+              className={`w-full max-w-full truncate bg-[#161619] border border-[var(--color-ink-faint)] text-xs text-gray-200 p-2.5 outline-none font-['Space_Mono'] ${isReadOnly ? 'opacity-50' : ''}`}
             >
               <option value="Sim, me avisem quando abrir">Sim, me avisem quando abrir</option>
               <option value="Talvez, depende da tarefa">Talvez, depende da tarefa</option>

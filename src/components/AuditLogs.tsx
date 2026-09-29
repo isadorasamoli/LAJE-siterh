@@ -22,12 +22,24 @@ import {
   FileText
 } from 'lucide-react';
 import { toast } from 'react-hot-toast';
+import AdminAccessBlocked from './AdminAccessBlocked';
 
 interface AuditLogsProps {
+  isAdmin?: boolean;
   currentUserEmail?: string;
+  onNavigateHome?: () => void;
 }
 
-export default function AuditLogs({ currentUserEmail }: AuditLogsProps) {
+export default function AuditLogs({ isAdmin = false, currentUserEmail, onNavigateHome }: AuditLogsProps) {
+  if (!isAdmin) {
+    return (
+      <AdminAccessBlocked 
+        title="Acesso Restrito: Log de Alterações"
+        onNavigateHome={onNavigateHome}
+      />
+    );
+  }
+
   const [logs, setLogs] = useState<AuditLogItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
@@ -39,7 +51,7 @@ export default function AuditLogs({ currentUserEmail }: AuditLogsProps) {
   const [isDeleting, setIsDeleting] = useState(false);
 
   const activeEmail = (currentUserEmail || auth.currentUser?.email || '').toLowerCase().trim();
-  const canDeleteLogs = activeEmail === 'isadora.mlima@ufpe.br' || activeEmail.startsWith('isadora.mlima@ufpe');
+  const canDeleteLogs = activeEmail === 'isadorasdml@gmail.com' || activeEmail === 'isadora.mlima@ufpe.br' || activeEmail.startsWith('isadora.mlima@ufpe');
 
   const fetchLogs = async () => {
     try {
@@ -123,8 +135,9 @@ export default function AuditLogs({ currentUserEmail }: AuditLogsProps) {
   };
 
   useEffect(() => {
+    if (!isAdmin) return;
     fetchLogs();
-  }, []);
+  }, [isAdmin]);
 
   const filteredLogs = useMemo(() => {
     const now = Date.now();

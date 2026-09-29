@@ -3,18 +3,40 @@ import { collection, getDocs, doc, updateDoc, deleteDoc, deleteField } from 'fir
 import { db } from '../lib/firebase';
 import { handleFirestoreError, OperationType } from '../lib/utils';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell, LabelList } from 'recharts';
-import { Loader2, Users, Target, Activity, X, Search, Download, FileText, Trash2, Edit2, Cake, Gift, Calendar as CalendarIcon, PartyPopper, Sparkles, ChevronLeft, ChevronRight, Mail, Copy, Bell, BellRing, Check, History, Gamepad2, Briefcase, Kanban, Filter, RotateCcw, SlidersHorizontal, CheckCircle2 } from 'lucide-react';
+import { Loader2, Users, Target, Activity, X, Search, Download, FileText, Trash2, Edit2, Cake, Gift, Calendar as CalendarIcon, PartyPopper, Sparkles, ChevronLeft, ChevronRight, Mail, Copy, Bell, BellRing, Check, History, Gamepad2, Briefcase, Kanban, Filter, RotateCcw, SlidersHorizontal, CheckCircle2, UserPlus } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import { logAuditAction } from '../lib/audit';
 import { exportDetailedMemberPDF } from '../lib/exportDetailedMemberPDF';
+import AdminAccessBlocked from './AdminAccessBlocked';
 
 interface DashboardProps {
+  isAdmin?: boolean;
+  isRHMember?: boolean;
+  currentUserEmail?: string;
+  currentUserName?: string;
   onNavigateTab?: (tab: 'form' | 'projects' | 'dashboard' | 'calendar' | 'logs' | 'settings') => void;
 }
 
-export default function Dashboard({ onNavigateTab }: DashboardProps = {}) {
+export default function Dashboard({ 
+  isAdmin = false, 
+  isRHMember = false,
+  currentUserEmail = '',
+  currentUserName = '',
+  onNavigateTab 
+}: DashboardProps) {
+  const canAccess = isAdmin || isRHMember;
+
+  if (!canAccess) {
+    return (
+      <AdminAccessBlocked 
+        title="Acesso Restrito: Dashboard"
+        onNavigateHome={() => onNavigateTab ? onNavigateTab('form') : undefined}
+      />
+    );
+  }
+
   const [data, setData] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedMember, setSelectedMember] = useState<any | null>(null);
@@ -25,6 +47,14 @@ export default function Dashboard({ onNavigateTab }: DashboardProps = {}) {
   const [viewMonthDate, setViewMonthDate] = useState<Date>(new Date());
   const [isAlertPopoverOpen, setIsAlertPopoverOpen] = useState(false);
   const hasNotifiedBirthdaysRef = useRef(false);
+
+  // Estados para Alocação de Membros em Equipes de Projetos
+  const [projectsList, setProjectsList] = useState<any[]>([]);
+  const [isAllocateModalOpen, setIsAllocateModalOpen] = useState(false);
+  const [allocateMember, setAllocateMember] = useState<any | null>(null);
+  const [allocateProjectId, setAllocateProjectId] = useState<string>('');
+  const [allocateRole, setAllocateRole] = useState<string>('');
+  const [isAllocating, setIsAllocating] = useState(false);
   
   const [isEditStatusOpen, setIsEditStatusOpen] = useState(false);
   const [deletionReason, setDeletionReason] = useState('');
@@ -74,6 +104,18 @@ export default function Dashboard({ onNavigateTab }: DashboardProps = {}) {
       }
 
       setData(docs);
+
+      // Carregar projetos para alocação de membros pela diretoria e RH
+      try {
+        const projSnap = await getDocs(collection(db, 'projects'));
+        const projs = projSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+        setProjectsList(projs);
+        if (projs.length > 0 && !allocateProjectId) {
+          setAllocateProjectId(projs[0].id);
+        }
+      } catch (projErr) {
+        console.warn('Erro ao carregar projetos no Dashboard:', projErr);
+      }
     } catch (error) {
       handleFirestoreError(error, OperationType.LIST, 'responses');
     } finally {
@@ -82,8 +124,98 @@ export default function Dashboard({ onNavigateTab }: DashboardProps = {}) {
   };
 
   useEffect(() => {
+    if (!canAccess) return;
     fetchData();
-  }, []);
+  }, [canAccess]);
+
+  const handleOpenAllocateModal = (member: any) => {
+    setAllocateMember(member);
+    const primaryRole = (member.leagueRole || 'Desenvolvedor').split(',')[0].trim();
+    setAllocateRole(primaryRole);
+    if (projectsList.length > 0 && !allocateProjectId) {
+      setAllocateProjectId(projectsList[0].id);
+    }
+    setIsAllocateModalOpen(true);
+  };
+
+  const handleConfirmAllocation = async () => {
+    if (!allocateMember) {
+      toast.error('Nenhum membro selecionado');
+      return;
+    }
+    if (!allocateProjectId) {
+      toast.error('Selecione um projeto de destino');
+      return;
+    }
+    const targetProject = projectsList.find(p => p.id === allocateProjectId);
+    if (!targetProject) {
+      toast.error('Projeto não encontrado');
+      return;
+    }
+
+    try {
+      setIsAllocating(true);
+      const assignedRoleClean = (allocateRole.trim() || 'Equipe');
+      const memberEntry = `${allocateMember.name} (${assignedRoleClean})`;
+
+      const currentTeam = Array.isArray(targetProject.teamMembers)
+        ? [...targetProject.teamMembers]
+        : (targetProject.teamMembers ? [String(targetProject.teamMembers)] : []);
+
+      const alreadyExists = currentTeam.some((m: string) =>
+        m.toLowerCase().includes(allocateMember.name.toLowerCase())
+      );
+
+      if (alreadyExists) {
+        toast.error(`${allocateMember.name} já faz parte da equipe de "${targetProject.name}"!`);
+        setIsAllocating(false);
+        return;
+      }
+
+      currentTeam.push(memberEntry);
+
+      // 1. Atualizar projeto no Firestore
+      await updateDoc(doc(db, 'projects', targetProject.id), {
+        teamMembers: currentTeam,
+        updatedAt: new Date().toISOString()
+      });
+
+      // 2. Atualizar documento do membro em responses
+      await updateDoc(doc(db, 'responses', allocateMember.id), {
+        currentProjects: targetProject.name,
+        isInProject: 'Sim',
+        lastEditedAt: new Date().toISOString(),
+        lastEditedBy: currentUserEmail || currentUserName || 'RH/Admin'
+      });
+
+      // 3. Auditoria
+      await logAuditAction({
+        action: 'Alocação em Projeto (Dashboard)',
+        targetMemberId: allocateMember.id,
+        targetMemberName: allocateMember.name,
+        targetMemberEmail: allocateMember.email,
+        details: `Alocou ${allocateMember.name} como ${assignedRoleClean} na equipe do projeto "${targetProject.name}"`,
+        performedByEmail: currentUserEmail || 'admin@laje.com',
+        performedByName: currentUserName || (isRHMember ? 'Membro do RH' : 'Super Admin')
+      });
+
+      // 4. Atualizar estados locais no dashboard
+      setProjectsList(prev => prev.map(p => p.id === targetProject.id ? { ...p, teamMembers: currentTeam } : p));
+      setData(prev => prev.map(m => m.id === allocateMember.id ? { ...m, currentProjects: targetProject.name, isInProject: 'Sim' } : m));
+      if (selectedMember && selectedMember.id === allocateMember.id) {
+        setSelectedMember((prev: any) => ({ ...prev, currentProjects: targetProject.name, isInProject: 'Sim' }));
+      }
+
+      toast.success(`${allocateMember.name} foi adicionado(a) à equipe de "${targetProject.name}" com sucesso!`);
+      setIsAllocateModalOpen(false);
+      setAllocateMember(null);
+    } catch (err: any) {
+      console.error('Erro ao alocar membro:', err);
+      toast.error('Erro ao adicionar membro à equipe do projeto');
+    } finally {
+      setIsAllocating(false);
+    }
+  };
 
   const distinctRoles: string[] = Array.from(
     new Set<string>(
@@ -231,6 +363,19 @@ export default function Dashboard({ onNavigateTab }: DashboardProps = {}) {
     m.notInProjectStatus?.includes('acompanhar') || m.notInProjectStatus?.includes('curiosidade')
   );
 
+  const ROLE_COLORS: Record<string, string> = {
+    'Programação': '#10b981',
+    'Arte': '#a855f7',
+    'Game Design': '#f59e0b',
+    'Som': '#3b82f6',
+    'Produção': '#ec4899',
+    'Marketing': '#06b6d4',
+    'RH': '#eab308',
+    'Não informado': '#6b7280'
+  };
+
+  const DEFAULT_COLORS = ['#10b981', '#a855f7', '#f59e0b', '#3b82f6', '#ec4899', '#06b6d4', '#eab308', '#6366f1', '#14b8a6'];
+
   const rolesCount = activeMembers.reduce((acc: any, curr) => {
     const roles = curr.leagueRole
       ? String(curr.leagueRole).split(',').map((r: string) => r.trim()).filter(Boolean)
@@ -241,10 +386,19 @@ export default function Dashboard({ onNavigateTab }: DashboardProps = {}) {
     return acc;
   }, {});
   
-  const chartData = Object.keys(rolesCount).map(role => ({
-    name: role,
-    Membros: rolesCount[role]
-  }));
+  const chartData = Object.keys(rolesCount)
+    .map((role, idx) => {
+      const count = rolesCount[role] || 0;
+      const pct = activeMembers.length > 0 ? Math.round((count / activeMembers.length) * 100) : 0;
+      return {
+        name: role,
+        role,
+        Membros: count,
+        percentage: pct,
+        color: ROLE_COLORS[role] || DEFAULT_COLORS[idx % DEFAULT_COLORS.length]
+      };
+    })
+    .sort((a, b) => b.Membros - a.Membros);
 
   const parseBirthday = (birthdayStr?: string) => {
     if (!birthdayStr || typeof birthdayStr !== 'string') return null;
@@ -1440,50 +1594,166 @@ export default function Dashboard({ onNavigateTab }: DashboardProps = {}) {
         </div>
       )}
 
-      {/* Chart Top */}
+      {/* CARD DE MÉTRICAS: TOTAL DE MEMBROS ATIVOS & DISTRIBUIÇÃO POR 'LEAGUE ROLE' (RECHARTS) */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <div className="lg:col-span-2 p-6 bg-[rgba(255,255,255,0.02)] border border-[var(--color-ink-faint)]  ">
-          <h3 className="text-white font-semibold mb-6">Membros por Categoria</h3>
-          <div className="h-72 w-full">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={chartData} margin={{ top: 15, right: 10, left: -20, bottom: 45 }}>
-                <XAxis 
-                  dataKey="name" 
-                  interval={0}
-                  tick={{ fill: '#e5e7eb', fontSize: 11, fontWeight: 500 }} 
-                  tickLine={false} 
-                  axisLine={{ stroke: '#374151' }}
-                  angle={-20}
-                  textAnchor="end"
-                  height={55}
-                />
-                <YAxis stroke="#9ca3af" fontSize={12} tickLine={false} axisLine={false} allowDecimals={false} />
-                <Tooltip 
-                  cursor={{ fill: '#1f2937' }}
-                  contentStyle={{ backgroundColor: '#111827', borderColor: '#374151', borderRadius: '0.5rem', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }}
-                  itemStyle={{ color: '#10b981', fontWeight: 600 }}
-                />
-                <Bar dataKey="Membros" radius={[4, 4, 0, 0]}>
-                  <LabelList dataKey="Membros" position="top" fill="#34d399" fontSize={11} fontWeight={600} offset={6} />
-                  {chartData.map((entry, index) => (
-                    <Cell key={`cell-${index}`} fill="#10b981" />
-                  ))}
-                </Bar>
-              </BarChart>
-            </ResponsiveContainer>
+        <div className="lg:col-span-2 p-6 bg-[rgba(255,255,255,0.02)] border border-[var(--color-ink-faint)] relative overflow-hidden flex flex-col justify-between">
+          <div className="absolute top-0 right-0 w-80 h-80 bg-emerald-500/5 rounded-full blur-3xl pointer-events-none" />
+
+          <div>
+            {/* Header com Total de Membros Ativos em destaque */}
+            <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 pb-5 border-b border-[var(--color-ink-faint)] mb-5">
+              <div className="flex items-center gap-3">
+                <div className="w-12 h-12 rounded-lg bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400 shrink-0 shadow-inner">
+                  <Users size={24} />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <h3 className="text-white font-bold text-base font-['Syne'] uppercase tracking-wide">
+                      Membros Ativos & Distribuição por League Role
+                    </h3>
+                    <span className="px-2 py-0.5 bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 text-[10px] font-['Space_Mono'] uppercase">
+                      Ao Vivo
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-gray-400 font-['Space_Mono'] mt-0.5">
+                    Visão demográfica das funções e alocações ativas na Liga
+                  </p>
+                </div>
+              </div>
+
+              {/* Métrica em Destaque: Total de Membros Ativos */}
+              <div className="flex items-center gap-4 bg-black/40 border border-gray-800/80 px-4 py-2.5 rounded-sm shrink-0 self-stretch sm:self-auto justify-between sm:justify-end">
+                <div>
+                  <span className="text-[10px] font-semibold text-gray-400 uppercase font-['Space_Mono'] block">
+                    Total Ativos
+                  </span>
+                  <div className="flex items-baseline gap-2">
+                    <span className="text-2xl font-extrabold text-white font-['Syne']">
+                      {activeCount}
+                    </span>
+                    <span className="text-[11px] text-emerald-400 font-['Space_Mono']">
+                      {totalCount > 0 ? `${Math.round((activeCount / totalCount) * 100)}%` : '100%'}
+                    </span>
+                  </div>
+                </div>
+                <div className="h-7 w-px bg-gray-800" />
+                <div>
+                  <span className="text-[10px] font-semibold text-gray-400 uppercase font-['Space_Mono'] block">
+                    Funções
+                  </span>
+                  <span className="text-xl font-bold text-emerald-300 font-['Syne']">
+                    {chartData.length}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* Recharts Bar Chart */}
+            <div className="h-72 w-full">
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={chartData} margin={{ top: 20, right: 10, left: -20, bottom: 45 }}>
+                  <XAxis 
+                    dataKey="name" 
+                    interval={0}
+                    tick={{ fill: '#e5e7eb', fontSize: 11, fontWeight: 500 }} 
+                    tickLine={false} 
+                    axisLine={{ stroke: '#374151' }}
+                    angle={-20}
+                    textAnchor="end"
+                    height={55}
+                  />
+                  <YAxis stroke="#9ca3af" fontSize={12} tickLine={false} axisLine={false} allowDecimals={false} />
+                  <Tooltip 
+                    cursor={{ fill: 'rgba(255, 255, 255, 0.05)' }}
+                    content={({ active, payload }) => {
+                      if (active && payload && payload.length) {
+                        const item = payload[0].payload;
+                        return (
+                          <div className="bg-gray-950 border border-gray-700 p-3 shadow-2xl rounded text-xs font-['Space_Mono'] space-y-1">
+                            <p className="font-bold text-white flex items-center gap-2">
+                              <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: item.color }} />
+                              {item.name}
+                            </p>
+                            <p className="text-emerald-400 font-bold">
+                              {item.Membros} {item.Membros === 1 ? 'membro ativo' : 'membros ativos'}
+                            </p>
+                            <p className="text-gray-400 text-[10px]">
+                              {item.percentage}% de todos os membros ativos
+                            </p>
+                          </div>
+                        );
+                      }
+                      return null;
+                    }}
+                  />
+                  <Bar dataKey="Membros" radius={[4, 4, 0, 0]}>
+                    <LabelList 
+                      dataKey="Membros" 
+                      position="top" 
+                      fill="#34d399" 
+                      fontSize={11} 
+                      fontWeight={700} 
+                      offset={6} 
+                    />
+                    {chartData.map((entry, index) => (
+                      <Cell key={`cell-${index}`} fill={entry.color || '#10b981'} />
+                    ))}
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+
+          {/* Role Badges Breakdown */}
+          <div className="flex flex-wrap items-center gap-2 pt-4 mt-2 border-t border-[var(--color-ink-faint)]">
+            {chartData.map(item => (
+              <div 
+                key={item.name}
+                className="flex items-center gap-1.5 px-2.5 py-1 bg-black/40 border border-gray-800 text-[11px] font-['Space_Mono'] rounded-sm"
+              >
+                <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: item.color }} />
+                <span className="text-gray-300">{item.name}</span>
+                <span className="text-white font-bold bg-white/10 px-1 py-0.2 rounded text-[10px]">
+                  {item.Membros}
+                </span>
+                <span className="text-gray-500 text-[10px]">({item.percentage}%)</span>
+              </div>
+            ))}
           </div>
         </div>
 
-        <div className="p-6 bg-[rgba(255,255,255,0.02)] border border-[var(--color-ink-faint)]   flex flex-col justify-between">
+        <div className="p-6 bg-[rgba(255,255,255,0.02)] border border-[var(--color-ink-faint)] flex flex-col justify-between">
           <div>
-            <h3 className="text-white font-semibold mb-6">Resumo Estatístico</h3>
+            <h3 className="text-white font-semibold mb-6 font-['Syne'] uppercase text-sm tracking-wider">
+              Resumo Estatístico
+            </h3>
             <div className="space-y-4">
               <div className="flex justify-between items-center pb-4 border-b border-[var(--color-ink-faint)]">
-                <span className="text-gray-400 font-medium">Total de Cadastros</span>
+                <div>
+                  <span className="text-gray-400 font-medium text-xs block">Total de Cadastros</span>
+                  <span className="text-[10px] text-gray-500 font-['Space_Mono']">Ativos + Histórico</span>
+                </div>
                 <span className="text-white font-bold text-xl">{totalCount}</span>
               </div>
               <div className="flex justify-between items-center pb-4 border-b border-[var(--color-ink-faint)]">
-                <span className="text-gray-400 font-medium">Projetos Ativos</span>
+                <div>
+                  <span className="text-gray-400 font-medium text-xs block">Membros Ativos</span>
+                  <span className="text-[10px] text-emerald-400/90 font-['Space_Mono']">Na liga atualmente</span>
+                </div>
+                <span className="text-emerald-400 font-bold text-xl">{activeCount}</span>
+              </div>
+              <div className="flex justify-between items-center pb-4 border-b border-[var(--color-ink-faint)]">
+                <div>
+                  <span className="text-gray-400 font-medium text-xs block">Membros em Projetos</span>
+                  <span className="text-[10px] text-amber-400/90 font-['Space_Mono']">Alocados em jogos</span>
+                </div>
+                <span className="text-amber-400 font-bold text-xl">{countByProjectStatus.in_project}</span>
+              </div>
+              <div className="flex justify-between items-center pb-4 border-b border-[var(--color-ink-faint)]">
+                <div>
+                  <span className="text-gray-400 font-medium text-xs block">Projetos Ativos</span>
+                  <span className="text-[10px] text-gray-500 font-['Space_Mono']">Jogos em andamento</span>
+                </div>
                 <span className="text-emerald-400 font-bold text-xl">{totalActiveProjects}</span>
               </div>
             </div>
@@ -1492,17 +1762,17 @@ export default function Dashboard({ onNavigateTab }: DashboardProps = {}) {
             <button 
               onClick={handleExportPDF}
               title="Exportar relatório em PDF com todas as informações e respostas dos membros"
-              className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-gray-800 hover:bg-gray-700 text-gray-200 text-sm font-medium transition-colors border border-gray-700 cursor-pointer"
+              className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-gray-800 hover:bg-gray-700 text-gray-200 text-xs font-semibold font-['Space_Mono'] transition-colors border border-gray-700 cursor-pointer"
             >
-              <FileText size={16} />
+              <FileText size={15} />
               Exportar para PDF
             </button>
             <button 
               onClick={handleExportCSV}
               title="Exportar planilha CSV com todas as respostas dos membros"
-              className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-gray-800 hover:bg-gray-700 text-gray-200 text-sm font-medium transition-colors border border-gray-700 cursor-pointer"
+              className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-gray-800 hover:bg-gray-700 text-gray-200 text-xs font-semibold font-['Space_Mono'] transition-colors border border-gray-700 cursor-pointer"
             >
-              <Download size={16} />
+              <Download size={15} />
               Exportar para CSV
             </button>
             {onNavigateTab && (
@@ -2074,6 +2344,13 @@ export default function Dashboard({ onNavigateTab }: DashboardProps = {}) {
                     >
                       <Edit2 size={15} />
                     </button>
+                    <button
+                      onClick={() => handleOpenAllocateModal(response)}
+                      title={`Alocar ${response.name || 'membro'} na equipe de um projeto oficial`}
+                      className="p-1.5 hover:bg-emerald-500/20 text-gray-400 hover:text-emerald-400 border border-transparent hover:border-emerald-500/30 transition-colors inline-flex items-center justify-center cursor-pointer ml-1"
+                    >
+                      <UserPlus size={15} />
+                    </button>
                   </td>
                 </tr>
               ))}
@@ -2137,6 +2414,14 @@ export default function Dashboard({ onNavigateTab }: DashboardProps = {}) {
                 >
                   <FileText size={14} />
                   Ficha em PDF
+                </button>
+                <button
+                  onClick={() => handleOpenAllocateModal(selectedMember)}
+                  className="flex items-center gap-2 px-3 py-1.5 bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/35 text-emerald-300 text-sm font-medium transition-colors cursor-pointer"
+                  title="Alocar este integrante na equipe de um projeto oficial"
+                >
+                  <UserPlus size={14} />
+                  Alocar em Projeto
                 </button>
                 <button
                   onClick={() => handleOpenEditResponses(selectedMember)}
@@ -2673,6 +2958,135 @@ export default function Dashboard({ onNavigateTab }: DashboardProps = {}) {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+      {/* MODAL: ALOCAR MEMBRO EM PROJETO (SUPER ADMIN & RH) */}
+      {isAllocateModalOpen && allocateMember && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in duration-200">
+          <div className="bg-[#141416] border border-gray-700 max-w-lg w-full p-6 shadow-2xl space-y-5">
+            <div className="flex items-start justify-between border-b border-gray-800 pb-3">
+              <div className="flex items-center gap-3">
+                <div className="p-2 bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
+                  <UserPlus size={20} />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-white font-['Syne']">
+                    Alocar em Equipe de Jogo
+                  </h3>
+                  <p className="text-xs text-gray-400 font-['Space_Mono'] mt-0.5">
+                    Adicionar integrante aos créditos e produção do projeto
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setIsAllocateModalOpen(false);
+                  setAllocateMember(null);
+                }}
+                className="text-gray-400 hover:text-white p-1"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            {/* Ficha Resumida do Membro */}
+            <div className="p-3 bg-gray-900 border border-gray-800 flex items-center gap-3">
+              <div className="w-10 h-10 rounded-full bg-emerald-500/20 border border-emerald-500/30 text-emerald-400 font-bold font-['Space_Mono'] flex items-center justify-center text-sm shrink-0">
+                {allocateMember.name?.charAt(0).toUpperCase()}
+              </div>
+              <div className="min-w-0">
+                <h4 className="text-sm font-bold text-white truncate">{allocateMember.name}</h4>
+                <p className="text-xs text-gray-400 font-['Space_Mono'] truncate">
+                  {allocateMember.email} {allocateMember.discordUser ? `• @${allocateMember.discordUser.replace(/^@/, '')}` : ''}
+                </p>
+                <div className="flex items-center gap-1.5 mt-1 flex-wrap">
+                  <span className="px-2 py-0.5 bg-gray-800 text-gray-300 border border-gray-700 text-[10px] font-['Space_Mono']">
+                    {allocateMember.leagueRole || 'Membro'}
+                  </span>
+                  {allocateMember.course && (
+                    <span className="text-[10px] text-gray-500 font-['Space_Mono']">
+                      {allocateMember.course}
+                    </span>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* Formulário de Alocação */}
+            <div className="space-y-4">
+              <div>
+                <label className="block text-xs font-semibold text-gray-300 font-['Space_Mono'] mb-1.5 uppercase">
+                  Projeto de Destino:
+                </label>
+                {projectsList.length === 0 ? (
+                  <p className="text-xs text-amber-400 font-['Space_Mono'] p-2 bg-amber-500/10 border border-amber-500/20">
+                    Nenhum projeto cadastrado no sistema. Crie um projeto na aba Projetos primeiro.
+                  </p>
+                ) : (
+                  <select
+                    value={allocateProjectId}
+                    onChange={e => setAllocateProjectId(e.target.value)}
+                    className="w-full bg-[#161619] border border-gray-700 p-2.5 text-xs text-white font-['Space_Mono'] outline-none focus:border-emerald-500"
+                  >
+                    {projectsList.map(p => (
+                      <option key={p.id} value={p.id}>
+                        {p.name} {p.status ? `(${p.status})` : ''} - Líder: {p.leader || 'N/A'}
+                      </option>
+                    ))}
+                  </select>
+                )}
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-gray-300 font-['Space_Mono'] mb-1.5 uppercase">
+                  Função / Papel no Jogo:
+                </label>
+                <input
+                  type="text"
+                  value={allocateRole}
+                  onChange={e => setAllocateRole(e.target.value)}
+                  placeholder="Ex: Game Developer, Pixel Artist, Sound Designer..."
+                  className="w-full bg-[#161619] border border-gray-700 p-2.5 text-xs text-white font-['Space_Mono'] outline-none focus:border-emerald-500"
+                />
+                <p className="text-[10px] text-gray-500 font-['Space_Mono'] mt-1">
+                  Esta função aparecerá na ficha oficial do jogo e atualizará o status do membro para "Em Projeto".
+                </p>
+              </div>
+            </div>
+
+            {/* Ações */}
+            <div className="flex items-center justify-end gap-3 pt-3 border-t border-gray-800">
+              <button
+                type="button"
+                onClick={() => {
+                  setIsAllocateModalOpen(false);
+                  setAllocateMember(null);
+                }}
+                className="px-4 py-2 bg-gray-800 hover:bg-gray-700 text-gray-300 text-xs font-['Space_Mono'] cursor-pointer transition-colors"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                disabled={isAllocating || projectsList.length === 0}
+                onClick={handleConfirmAllocation}
+                className="px-4 py-2 bg-emerald-500 hover:bg-emerald-400 text-gray-950 font-bold text-xs font-['Space_Mono'] flex items-center gap-1.5 cursor-pointer transition-all shadow-md disabled:opacity-50"
+              >
+                {isAllocating ? (
+                  <>
+                    <Loader2 size={13} className="animate-spin" />
+                    Alocando...
+                  </>
+                ) : (
+                  <>
+                    <UserPlus size={13} />
+                    Confirmar Alocação
+                  </>
+                )}
+              </button>
+            </div>
           </div>
         </div>
       )}

@@ -3,6 +3,7 @@ import { collection, query, getDocs, doc, setDoc, deleteDoc } from 'firebase/fir
 import { db } from '../lib/firebase';
 import { toast } from 'react-hot-toast';
 import { Shield, Trash2, Plus, UserPlus } from 'lucide-react';
+import AdminAccessBlocked from './AdminAccessBlocked';
 
 interface AdminUser {
   id: string;
@@ -10,12 +11,26 @@ interface AdminUser {
   addedAt: string;
 }
 
-export default function AdminSettings() {
+interface AdminSettingsProps {
+  isAdmin?: boolean;
+  onNavigateHome?: () => void;
+}
+
+export default function AdminSettings({ isAdmin = false, onNavigateHome }: AdminSettingsProps = {}) {
+  if (!isAdmin) {
+    return (
+      <AdminAccessBlocked 
+        title="Acesso Restrito: Administradores"
+        onNavigateHome={onNavigateHome}
+      />
+    );
+  }
+
   const [admins, setAdmins] = useState<AdminUser[]>([]);
   const [loading, setLoading] = useState(true);
   const [newEmail, setNewEmail] = useState('');
 
-  const hardcodedAdmins = ['isadora.mlima@ufpe.br'];
+  const hardcodedAdmins = ['isadorasdml@gmail.com', 'isadora.mlima@ufpe.br'];
 
   const fetchAdmins = async () => {
     try {
@@ -35,8 +50,9 @@ export default function AdminSettings() {
   };
 
   useEffect(() => {
+    if (!isAdmin) return;
     fetchAdmins();
-  }, []);
+  }, [isAdmin]);
 
   const handleAddAdmin = async (e: React.FormEvent) => {
     e.preventDefault();
