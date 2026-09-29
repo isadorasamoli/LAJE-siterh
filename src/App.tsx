@@ -25,11 +25,8 @@ export default function App() {
   const [loginError, setLoginError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<TabType>('form');
   const [isAdmin, setIsAdmin] = useState(false);
-  const [isRH, setIsRH] = useState(false);
   const [userLeagueRole, setUserLeagueRole] = useState<string>('');
   const [theme, setTheme] = useState<'dark' | 'light'>('dark');
-
-  const canAccessDashboard = isAdmin || isRH;
 
   const getTabFromUrl = (): TabType | null => {
     try {
@@ -59,16 +56,9 @@ export default function App() {
   };
 
   const handleTabChange = (targetTab: TabType) => {
-    if (targetTab === 'dashboard') {
-      if (!canAccessDashboard) {
-        toast.error('Acesso restrito: Privilégios de Administrador ou Membro do RH necessários.');
-        setActiveTab('form');
-        sanitizeAndSetUrl('form');
-        return;
-      }
-    } else if (targetTab === 'logs' || targetTab === 'settings') {
+    if (ADMIN_TABS.includes(targetTab)) {
       if (!isAdmin) {
-        toast.error('Acesso restrito: Privilégios de Administrador necessários.');
+        toast.error('Acesso restrito: Privilégios de administrador necessários.');
         setActiveTab('form');
         sanitizeAndSetUrl('form');
         return;
@@ -113,7 +103,6 @@ export default function App() {
         }
         setUserLeagueRole(role);
         const isRH = role.toLowerCase().includes('rh') || role.toLowerCase().includes('recursos humanos') || userEmail === 'isadora.mlima@ufpe.br' || userEmail.startsWith('isadora.mlima@ufpe');
-        setIsRH(isRH);
 
         const userRef = doc(db, 'users', currentUser.uid);
         const userSnap = await getDoc(userRef);
@@ -182,16 +171,9 @@ export default function App() {
     const syncRouteWithPermissions = () => {
       const urlTab = getTabFromUrl();
       if (urlTab) {
-        if (urlTab === 'dashboard') {
-          if (!canAccessDashboard) {
-            toast.error('Acesso restrito: Privilégios de Administrador ou Membro do RH necessários.');
-            setActiveTab('form');
-            sanitizeAndSetUrl('form');
-            return;
-          }
-        } else if (urlTab === 'logs' || urlTab === 'settings') {
+        if (ADMIN_TABS.includes(urlTab)) {
           if (!isAdmin) {
-            toast.error('Acesso restrito: Privilégios de Administrador necessários.');
+            toast.error('Acesso restrito: Privilégios de administrador necessários.');
             setActiveTab('form');
             sanitizeAndSetUrl('form');
             return;
@@ -199,10 +181,7 @@ export default function App() {
         }
         setActiveTab(urlTab);
       } else {
-        if (activeTab === 'dashboard' && !canAccessDashboard) {
-          setActiveTab('form');
-          sanitizeAndSetUrl('form');
-        } else if ((activeTab === 'logs' || activeTab === 'settings') && !isAdmin) {
+        if (ADMIN_TABS.includes(activeTab) && !isAdmin) {
           setActiveTab('form');
           sanitizeAndSetUrl('form');
         }
@@ -222,18 +201,15 @@ export default function App() {
       window.removeEventListener('hashchange', handleUrlChange);
       window.removeEventListener('popstate', handleUrlChange);
     };
-  }, [isAdmin, canAccessDashboard]);
+  }, [isAdmin]);
 
-  // Se o estado de isAdmin e canAccessDashboard forem revogados, forçar saída de abas administrativas imediatamente
+  // Se o estado de isAdmin for falso ou for revogado, forçar saída de abas administrativas imediatamente
   useEffect(() => {
-    if (activeTab === 'dashboard' && !canAccessDashboard) {
-      setActiveTab('form');
-      sanitizeAndSetUrl('form');
-    } else if ((activeTab === 'logs' || activeTab === 'settings') && !isAdmin) {
+    if (!isAdmin && ADMIN_TABS.includes(activeTab)) {
       setActiveTab('form');
       sanitizeAndSetUrl('form');
     }
-  }, [isAdmin, canAccessDashboard, activeTab]);
+  }, [isAdmin, activeTab]);
 
   const toggleTheme = async () => {
     const newTheme = theme === 'dark' ? 'light' : 'dark';
@@ -282,7 +258,6 @@ export default function App() {
         }
         setUserLeagueRole(role);
         const isRH = role.toLowerCase().includes('rh') || role.toLowerCase().includes('recursos humanos') || userEmail === 'isadora.mlima@ufpe.br' || userEmail.startsWith('isadora.mlima@ufpe');
-        setIsRH(isRH);
         const userRef = doc(db, 'users', result.user.uid);
         await setDoc(userRef, { isRH, leagueRole: role }, { merge: true });
       }
@@ -407,50 +382,42 @@ export default function App() {
           Calendário
         </button>
         
-        {(canAccessDashboard || isAdmin) && (
+        {isAdmin && (
           <>
-            <div className="font-['Space_Mono'] uppercase tracking-[0.1em] text-[0.7rem] mb-3 mt-6 px-4 opacity-50">
-              {isAdmin ? 'Administração' : 'Gestão de Membros'}
-            </div>
-            {canAccessDashboard && (
-              <button
-                onClick={() => handleTabChange('dashboard')}
-                className={`flex items-center gap-3 px-4 py-3 rounded-md font-medium text-[0.9rem] transition-all w-full text-left border-none cursor-pointer ${
-                  activeTab === 'dashboard' 
-                    ? 'bg-[var(--color-ink-faint)] text-[var(--color-ink)]' 
-                    : 'text-[var(--color-ink-muted)] hover:text-[var(--color-ink)] hover:bg-[rgba(255,255,255,0.03)]'
-                }`}
-              >
-                <LayoutDashboard size={18} />
-                Dashboard
-              </button>
-            )}
-            {isAdmin && (
-              <>
-                <button
-                  onClick={() => handleTabChange('logs')}
-                  className={`flex items-center gap-3 px-4 py-3 rounded-md font-medium text-[0.9rem] transition-all w-full text-left border-none cursor-pointer ${
-                    activeTab === 'logs' 
-                      ? 'bg-[var(--color-ink-faint)] text-[var(--color-ink)]' 
-                      : 'text-[var(--color-ink-muted)] hover:text-[var(--color-ink)] hover:bg-[rgba(255,255,255,0.03)]'
-                  }`}
-                >
-                  <History size={18} />
-                  Log de Alterações
-                </button>
-                <button
-                  onClick={() => handleTabChange('settings')}
-                  className={`flex items-center gap-3 px-4 py-3 rounded-md font-medium text-[0.9rem] transition-all w-full text-left border-none cursor-pointer ${
-                    activeTab === 'settings' 
-                      ? 'bg-[var(--color-ink-faint)] text-[var(--color-ink)]' 
-                      : 'text-[var(--color-ink-muted)] hover:text-[var(--color-ink)] hover:bg-[rgba(255,255,255,0.03)]'
-                  }`}
-                >
-                  <Settings size={18} />
-                  Administradores
-                </button>
-              </>
-            )}
+            <div className="font-['Space_Mono'] uppercase tracking-[0.1em] text-[0.7rem] mb-3 mt-6 px-4 opacity-50">Administração</div>
+            <button
+              onClick={() => handleTabChange('dashboard')}
+              className={`flex items-center gap-3 px-4 py-3 rounded-md font-medium text-[0.9rem] transition-all w-full text-left border-none cursor-pointer ${
+                activeTab === 'dashboard' 
+                  ? 'bg-[var(--color-ink-faint)] text-[var(--color-ink)]' 
+                  : 'text-[var(--color-ink-muted)] hover:text-[var(--color-ink)] hover:bg-[rgba(255,255,255,0.03)]'
+              }`}
+            >
+              <LayoutDashboard size={18} />
+              Dashboard
+            </button>
+            <button
+              onClick={() => handleTabChange('logs')}
+              className={`flex items-center gap-3 px-4 py-3 rounded-md font-medium text-[0.9rem] transition-all w-full text-left border-none cursor-pointer ${
+                activeTab === 'logs' 
+                  ? 'bg-[var(--color-ink-faint)] text-[var(--color-ink)]' 
+                  : 'text-[var(--color-ink-muted)] hover:text-[var(--color-ink)] hover:bg-[rgba(255,255,255,0.03)]'
+              }`}
+            >
+              <History size={18} />
+              Log de Alterações
+            </button>
+            <button
+              onClick={() => handleTabChange('settings')}
+              className={`flex items-center gap-3 px-4 py-3 rounded-md font-medium text-[0.9rem] transition-all w-full text-left border-none cursor-pointer ${
+                activeTab === 'settings' 
+                  ? 'bg-[var(--color-ink-faint)] text-[var(--color-ink)]' 
+                  : 'text-[var(--color-ink-muted)] hover:text-[var(--color-ink)] hover:bg-[rgba(255,255,255,0.03)]'
+              }`}
+            >
+              <Settings size={18} />
+              Administradores
+            </button>
           </>
         )}
       </aside>
@@ -488,20 +455,18 @@ export default function App() {
           >
             Calendário
           </button>
-          {canAccessDashboard && (
-            <button
-              onClick={() => handleTabChange('dashboard')}
-              className={`flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-lg whitespace-nowrap transition-all ${
-                activeTab === 'dashboard' 
-                  ? 'bg-[var(--color-ink-faint)] text-[var(--color-ink)]' 
-                  : 'text-[var(--color-ink-muted)] hover:text-[var(--color-ink)] bg-[rgba(255,255,255,0.03)]'
-              }`}
-            >
-              Dashboard
-            </button>
-          )}
           {isAdmin && (
             <>
+              <button
+                onClick={() => handleTabChange('dashboard')}
+                className={`flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-lg whitespace-nowrap transition-all ${
+                  activeTab === 'dashboard' 
+                    ? 'bg-[var(--color-ink-faint)] text-[var(--color-ink)]' 
+                    : 'text-[var(--color-ink-muted)] hover:text-[var(--color-ink)] bg-[rgba(255,255,255,0.03)]'
+                }`}
+              >
+                Dashboard
+              </button>
               <button
                 onClick={() => handleTabChange('logs')}
                 className={`flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-lg whitespace-nowrap transition-all ${
@@ -540,14 +505,8 @@ export default function App() {
           {activeTab === 'calendar' && <CalendarTab isAdmin={isAdmin} token={token || ''} />}
           
           {activeTab === 'dashboard' && (
-            canAccessDashboard ? (
-              <Dashboard 
-                isAdmin={isAdmin} 
-                isRHMember={isRH}
-                onNavigateTab={handleTabChange}
-                currentUserEmail={user?.email || ''}
-                currentUserName={user?.displayName || user?.email?.split('@')[0] || 'Membro do RH'}
-              />
+            isAdmin ? (
+              <Dashboard isAdmin={isAdmin} onNavigateTab={handleTabChange} />
             ) : (
               <AdminAccessBlocked 
                 title="Acesso Restrito: Dashboard" 

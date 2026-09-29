@@ -3,7 +3,7 @@ import { collection, getDocs, addDoc, updateDoc, deleteDoc, doc, query, orderBy 
 import { db } from '../lib/firebase';
 import { handleFirestoreError, OperationType } from '../lib/utils';
 import { getAuth } from 'firebase/auth';
-import { ChevronLeft, ChevronRight, Plus, Loader2, X, Calendar as CalendarIcon, Clock, Trash2, Edit2, Search, Mail, ExternalLink } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Plus, Loader2, X, Calendar as CalendarIcon, Clock, Trash2, Edit2, Search } from 'lucide-react';
 import { 
   format, addMonths, subMonths, startOfMonth, endOfMonth, 
   startOfWeek, endOfWeek, eachDayOfInterval, isSameMonth, 
@@ -12,12 +12,9 @@ import {
 import { ptBR } from 'date-fns/locale';
 import { toast } from 'react-hot-toast';
 import { sendEventNotification } from '../lib/workspace';
-import { buildEventEmail, openManualEmailInBrowser, EmailPayload } from '../lib/manualEmail';
-import ManualEmailModal from './ManualEmailModal';
 
 interface CalendarProps {
   isAdmin: boolean;
-  isRH?: boolean;
   token: string;
 }
 
@@ -31,13 +28,11 @@ interface MemberBirthday {
   status: string;
 }
 
-export default function CalendarTab({ isAdmin, isRH = false, token }: CalendarProps) {
-  const canManage = isAdmin || isRH;
+export default function CalendarTab({ isAdmin, token }: CalendarProps) {
   const [currentDate, setCurrentDate] = useState(new Date());
   const [events, setEvents] = useState<any[]>([]);
   const [memberBirthdays, setMemberBirthdays] = useState<MemberBirthday[]>([]);
   const [loading, setLoading] = useState(true);
-  const [emailModalData, setEmailModalData] = useState<EmailPayload | null>(null);
   
   const [selectedBirthday, setSelectedBirthday] = useState<{
     name: string;
@@ -136,17 +131,13 @@ export default function CalendarTab({ isAdmin, isRH = false, token }: CalendarPr
   };
 
   const sendEventEmail = async (eventData: any, type: 'create' | 'update' | 'delete') => {
+    if (!token) return;
     try {
       const responseSnap = await getDocs(collection(db, 'responses'));
       const emails = responseSnap.docs
         .map(response => response.data().email)
         .filter((email): email is string => Boolean(email));
-
-      const payload = buildEventEmail(eventData, type, emails);
-      // Abre aba no navegador para envio manual e prepara fallback
-      openManualEmailInBrowser(payload);
-      setEmailModalData(payload);
-      toast.success('Aba do navegador aberta para envio do e-mail de evento!');
+      await sendEventNotification(token, emails, eventData, type);
     } catch (e) {
       console.info('Notificação por e-mail de evento não pôde ser enviada:', e);
     }
@@ -462,7 +453,7 @@ export default function CalendarTab({ isAdmin, isRH = false, token }: CalendarPr
       {isModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm" onClick={() => setIsModalOpen(false)}>
           <div className="bg-[var(--color-bg-dark)] border border-[var(--color-ink-faint)] w-full max-w-md shadow-2xl p-8" onClick={e => e.stopPropagation()}>
-            {!canManage ? (
+            {!isAdmin ? (
               <div>
                  <h3 className="text-lg font-bold text-[var(--color-ink)] font-['Syne'] uppercase flex items-center gap-2 mb-6">
                     <CalendarIcon className="text-[var(--color-accent)]" size={20} />
@@ -501,34 +492,13 @@ export default function CalendarTab({ isAdmin, isRH = false, token }: CalendarPr
               </h3>
               <div className="flex items-center gap-2">
                 {editingEventId && (
-                  <>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const eventDate = new Date(selectedDate);
-                        const [hours, minutes] = formData.time.split(':');
-                        eventDate.setHours(parseInt(hours, 10), parseInt(minutes, 10), 0, 0);
-                        sendEventEmail({
-                          title: formData.title,
-                          description: formData.description,
-                          duration: formData.duration,
-                          date: eventDate.toISOString()
-                        }, 'update');
-                      }}
-                      className="px-2 py-1 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 text-xs font-['Space_Mono'] flex items-center gap-1 cursor-pointer transition-colors"
-                      title="Abrir aba no navegador com e-mail do evento preenchido"
-                    >
-                      <Mail size={13} />
-                      Disparar E-mail
-                    </button>
-                    <button 
-                      onClick={(e) => handleDeleteRequest(e, editingEventId)} 
-                      className="text-[var(--color-ink-muted)] hover:text-red-400 transition-colors bg-transparent border-none cursor-pointer"
-                      title="Excluir Evento"
-                    >
-                      <Trash2 size={18} />
-                    </button>
-                  </>
+                  <button 
+                    onClick={(e) => handleDeleteRequest(e, editingEventId)} 
+                    className="text-[var(--color-ink-muted)] hover:text-red-400 transition-colors bg-transparent border-none cursor-pointer"
+                    title="Excluir Evento"
+                  >
+                    <Trash2 size={18} />
+                  </button>
                 )}
                 <button onClick={() => setIsModalOpen(false)} className="text-[var(--color-ink-muted)] hover:text-[var(--color-ink)] bg-transparent border-none cursor-pointer">
                   <X size={20} />
@@ -667,12 +637,6 @@ export default function CalendarTab({ isAdmin, isRH = false, token }: CalendarPr
           </div>
         </div>
       )}
-
-      {/* MODAL DE ENVIO MANUAL DE E-MAIL EM NOVA ABA */}
-      <ManualEmailModal
-        email={emailModalData}
-        onClose={() => setEmailModalData(null)}
-      />
     </div>
   );
 }

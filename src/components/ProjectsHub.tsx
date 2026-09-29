@@ -19,14 +19,6 @@ import {
   clearAllProjectsAndOpenings
 } from '../lib/projects';
 import { sendNewProjectNotification, createProjectMailtoLink } from '../lib/workspace';
-import { 
-  buildProjectEmail, 
-  buildOpeningEmail, 
-  buildTaskEmail, 
-  openManualEmailInBrowser, 
-  EmailPayload 
-} from '../lib/manualEmail';
-import ManualEmailModal from './ManualEmailModal';
 import { logAuditAction } from '../lib/audit';
 import { 
   Gamepad2, 
@@ -58,11 +50,7 @@ import {
   Trash2,
   FolderPlus,
   Mail,
-  Edit2,
-  UserCheck,
-  Crown,
-  RotateCcw,
-  SlidersHorizontal
+  Edit2
 } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 
@@ -235,33 +223,20 @@ export default function ProjectsHub({
   const [checkInModalProject, setCheckInModalProject] = useState<ProjectItem | null>(null);
   const [checkInNotes, setCheckInNotes] = useState('');
 
-  // Base de membros da LAJE e estado para o filtro do dashboard
-  const [allResponses, setAllResponses] = useState<any[]>([]);
-  const [isAddTeamMemberModalOpen, setIsAddTeamMemberModalOpen] = useState(false);
-  const [teamMemberSearch, setTeamMemberSearch] = useState('');
-  const [teamMemberRoleFilter, setTeamMemberRoleFilter] = useState('all');
-  const [teamMemberProjectStatusFilter, setTeamMemberProjectStatusFilter] = useState('all');
-  const [teamMemberStatusFilter, setTeamMemberStatusFilter] = useState<'all' | 'active' | 'former'>('all');
-  const [memberAssignedRoles, setMemberAssignedRoles] = useState<{ [memberId: string]: string }>({});
-  const [isSubmittingMemberAdd, setIsSubmittingMemberAdd] = useState<{ [memberId: string]: boolean }>({});
-  const [emailModalData, setEmailModalData] = useState<EmailPayload | null>(null);
-
   const fetchData = async () => {
     try {
       setLoading(true);
-      const [projSnap, openSnap, taskSnap, propSnap, respSnap] = await Promise.all([
+      const [projSnap, openSnap, taskSnap, propSnap] = await Promise.all([
         getDocs(query(collection(db, 'projects'), orderBy('createdAt', 'desc'))),
         getDocs(query(collection(db, 'openings'), orderBy('openedAt', 'desc'))),
         getDocs(query(collection(db, 'tasks'), orderBy('createdAt', 'desc'))),
-        getDocs(query(collection(db, 'proposals'), orderBy('createdAt', 'desc'))),
-        getDocs(collection(db, 'responses'))
+        getDocs(query(collection(db, 'proposals'), orderBy('createdAt', 'desc')))
       ]);
 
       setProjects(projSnap.docs.map(d => ({ id: d.id, ...d.data() } as ProjectItem)));
       setOpenings(openSnap.docs.map(d => ({ id: d.id, ...d.data() } as OpeningItem)));
       setTasks(taskSnap.docs.map(d => ({ id: d.id, ...d.data() } as TaskItem)));
       setProposals(propSnap.docs.map(d => ({ id: d.id, ...d.data() } as ProposalItem)));
-      setAllResponses(respSnap.docs.map(d => ({ id: d.id, ...d.data() })));
     } catch (err) {
       console.error('Error fetching projects hub data:', err);
       toast.error('Erro ao carregar dados de projetos');
@@ -354,10 +329,16 @@ export default function ProjectsHub({
               console.warn('Erro ao salvar anúncio no Firestore:', annError);
             }
 
-            const payload = buildProjectEmail(newProjData, memberEmails);
-            openManualEmailInBrowser(payload);
-            setEmailModalData(payload);
-            toast.success(`Aba aberta no navegador para disparo do e-mail do projeto aos membros!`);
+            if (token) {
+              try {
+                const res = await sendNewProjectNotification(token, memberEmails, newProjData);
+                if (res.success) {
+                  toast.success(`Notificação enviada por e-mail para ${res.sentCount} membro(s)!`, { id: 'email-project-alert' });
+                }
+              } catch (sendErr) {
+                console.info('Envio por Gmail API não disponível sem permissão explícita de e-mail.', sendErr);
+              }
+            }
           }
         } catch (emailErr) {
           console.error('Erro ao processar notificações:', emailErr);
@@ -466,57 +447,21 @@ export default function ProjectsHub({
         return;
       }
 
-      const payload = buildProjectEmail(project, memberEmails);
-      openManualEmailInBrowser(payload);
-      setEmailModalData(payload);
-      toast.success(`Aba do navegador aberta com o e-mail de "${project.name}" preparado!`);
+      const mailtoUrl = createProjectMailtoLink(memberEmails, {
+        name: project.name,
+        genre: project.genre,
+        engine: project.engine,
+        leader: project.leader,
+        description: project.elevatorPitch || project.description,
+        coverEmoji: project.coverEmoji,
+        semester: project.semester
+      });
+
+      window.open(mailtoUrl, '_blank');
+      toast.success(`E-mail preparado com ${memberEmails.length} membros em cópia oculta (BCC)!`);
     } catch (err) {
       console.error('Erro ao disparar comunicado por e-mail:', err);
       toast.error('Erro ao gerar comunicado por e-mail');
-    }
-  };
-
-  const handleBroadcastOpeningEmail = async (opening: OpeningItem | { role: string; projectName: string; description: string; estimatedTime?: string; acceptsBeginners?: boolean }) => {
-    try {
-      const responseSnap = await getDocs(collection(db, 'responses'));
-      const memberEmails = responseSnap.docs
-        .map(doc => doc.data().email)
-        .filter((email): email is string => Boolean(email && email.includes('@')));
-
-      if (memberEmails.length === 0) {
-        toast.error('Nenhum e-mail de membro cadastrado encontrado.');
-        return;
-      }
-
-      const payload = buildOpeningEmail(opening, memberEmails);
-      openManualEmailInBrowser(payload);
-      setEmailModalData(payload);
-      toast.success(`Aba do navegador aberta com o e-mail da vaga "${opening.role}"!`);
-    } catch (err) {
-      console.error('Erro ao disparar e-mail de vaga:', err);
-      toast.error('Erro ao gerar e-mail da vaga');
-    }
-  };
-
-  const handleBroadcastTaskEmail = async (task: TaskItem | { title: string; projectName: string; area: string; deliverySpecs: string; size?: string; deadline?: string; helper?: string }) => {
-    try {
-      const responseSnap = await getDocs(collection(db, 'responses'));
-      const memberEmails = responseSnap.docs
-        .map(doc => doc.data().email)
-        .filter((email): email is string => Boolean(email && email.includes('@')));
-
-      if (memberEmails.length === 0) {
-        toast.error('Nenhum e-mail de membro cadastrado encontrado.');
-        return;
-      }
-
-      const payload = buildTaskEmail(task, memberEmails);
-      openManualEmailInBrowser(payload);
-      setEmailModalData(payload);
-      toast.success(`Aba do navegador aberta com o e-mail da tarefa "${task.title}"!`);
-    } catch (err) {
-      console.error('Erro ao disparar e-mail de tarefa:', err);
-      toast.error('Erro ao gerar e-mail da tarefa');
     }
   };
 
@@ -559,7 +504,6 @@ export default function ProjectsHub({
         newValue: JSON.stringify(newOpeningData)
       });
       toast.success('Vaga publicada com sucesso!');
-      handleBroadcastOpeningEmail(newOpeningData);
     } catch (err) {
       console.error(err);
       toast.error('Erro ao publicar vaga');
@@ -607,7 +551,6 @@ export default function ProjectsHub({
         helper: currentUserName || ''
       });
       toast.success('Tarefa adicionada ao mural com sucesso!');
-      handleBroadcastTaskEmail(newTaskData);
     } catch (err) {
       console.error(err);
       toast.error('Erro ao adicionar tarefa');
@@ -742,263 +685,6 @@ export default function ProjectsHub({
       return true;
     });
   }, [openings, openingProjectFilter]);
-
-  // Lista dinâmica de funções distintas na base de membros da LAJE (para o filtro do Dashboard)
-  const distinctMemberRoles = useMemo(() => {
-    return Array.from(
-      new Set<string>(
-        allResponses.flatMap(m =>
-          m.leagueRole
-            ? String(m.leagueRole).split(',').map((r: string) => r.trim()).filter(Boolean)
-            : []
-        )
-      )
-    ).sort();
-  }, [allResponses]);
-
-  // Filtro idêntico ao do Dashboard para buscar membros da equipe
-  const filteredAddMembers = useMemo(() => {
-    return allResponses.filter(member => {
-      // 1. Busca textual: nome, e-mail, discord, curso, projetos atuais
-      if (teamMemberSearch.trim()) {
-        const q = teamMemberSearch.toLowerCase().trim();
-        const matchName = member.name?.toLowerCase().includes(q);
-        const matchEmail = member.email?.toLowerCase().includes(q);
-        const matchDiscord = member.discordUser?.toLowerCase().includes(q);
-        const matchCourse = member.course?.toLowerCase().includes(q);
-        const matchProject = member.currentProjects?.toLowerCase().includes(q);
-        if (!matchName && !matchEmail && !matchDiscord && !matchCourse && !matchProject) {
-          return false;
-        }
-      }
-
-      // 2. Filtro por Função na Liga (leagueRole)
-      if (teamMemberRoleFilter !== 'all') {
-        if (!member.leagueRole) return false;
-        const roles = String(member.leagueRole).toLowerCase().split(',').map((r: string) => r.trim());
-        const targetRole = teamMemberRoleFilter.toLowerCase().trim();
-        const matches = roles.some((r: string) => r.includes(targetRole) || targetRole.includes(r));
-        if (!matches) return false;
-      }
-
-      // 3. Filtro por Status de Projeto
-      if (teamMemberProjectStatusFilter !== 'all') {
-        const hasProject =
-          member.isInProject === 'Sim' ||
-          (member.currentProjects && member.currentProjects.trim().length > 0 && member.currentProjects.toLowerCase() !== 'nenhum');
-
-        const isWaiting =
-          !hasProject && (
-            member.interestedProjects ||
-            member.notInProjectStatus?.includes('Quero entrar') ||
-            member.notInProjectStatus?.includes('Já tentei')
-          );
-
-        const isObserving =
-          member.notInProjectStatus?.includes('acompanhar') ||
-          member.notInProjectStatus?.includes('curiosidade');
-
-        if (teamMemberProjectStatusFilter === 'in_project') {
-          if (!hasProject) return false;
-        } else if (teamMemberProjectStatusFilter === 'waiting_invite') {
-          if (!isWaiting) return false;
-        } else if (teamMemberProjectStatusFilter === 'observing') {
-          if (!isObserving) return false;
-        } else if (teamMemberProjectStatusFilter === 'no_project') {
-          if (hasProject) return false;
-        }
-      }
-
-      // 4. Filtro por Situação Cadastral (Ativos vs Ex-membros)
-      if (teamMemberStatusFilter !== 'all') {
-        if (teamMemberStatusFilter === 'active' && member.status === 'Ex-membro') return false;
-        if (teamMemberStatusFilter === 'former' && member.status !== 'Ex-membro') return false;
-      }
-
-      return true;
-    });
-  }, [allResponses, teamMemberSearch, teamMemberRoleFilter, teamMemberProjectStatusFilter, teamMemberStatusFilter]);
-
-  // Verifica se o membro já consta na string teamMembers
-  const isMemberInProject = (memberName: string, teamMembersStr?: string) => {
-    if (!memberName || !teamMembersStr) return false;
-    const target = memberName.toLowerCase().trim();
-    const members = teamMembersStr.split(/,|\n/).map(s => s.trim().toLowerCase());
-    return members.some(m => {
-      const clean = m.replace(/\([^)]*\)/g, '').trim();
-      return clean === target || clean.includes(target) || target.includes(clean);
-    });
-  };
-
-  // Helper para estruturar os membros da equipe com papéis e vínculos aos dados cadastrais
-  const parseTeamMembersList = (teamMembersStr?: string) => {
-    if (!teamMembersStr) return [];
-    return teamMembersStr
-      .split(/,|\n/)
-      .map(s => s.trim())
-      .filter(Boolean)
-      .map(entry => {
-        const match = entry.match(/^([^(]+)(?:\(([^)]+)\))?$/);
-        const name = match ? match[1].trim() : entry;
-        const role = match && match[2] ? match[2].trim() : 'Membro';
-        const isLeader = role.toLowerCase().includes('líder') || role.toLowerCase().includes('lider');
-
-        // Busca o membro na base completa de respostas para trazer Discord, e-mail e foto
-        const responseMatch = allResponses.find(r =>
-          (r.name || '').toLowerCase().trim() === name.toLowerCase().trim()
-        );
-
-        return {
-          raw: entry,
-          name,
-          role,
-          isLeader,
-          responseMatch
-        };
-      });
-  };
-
-  // Adiciona membro da equipe usando o filtro do Dashboard
-  const handleAddMemberToCurrentProject = async (member: any, roleOverride?: string) => {
-    if (!selectedProject?.id) return;
-    const memberName = (member.name || '').trim();
-    if (!memberName) return;
-
-    let assignedRole = (roleOverride || memberAssignedRoles[member.id] || '').trim();
-    if (!assignedRole) {
-      if (member.leagueRole) {
-        const firstRole = String(member.leagueRole).split(',')[0].trim();
-        assignedRole = firstRole;
-      } else {
-        assignedRole = 'Equipe';
-      }
-    }
-
-    const currentTeamStr = (selectedProject.teamMembers || '').trim();
-    if (isMemberInProject(memberName, currentTeamStr)) {
-      toast.error(`${memberName} já está na equipe deste projeto!`);
-      return;
-    }
-
-    const memberEntry = `${memberName} (${assignedRole})`;
-
-    try {
-      setIsSubmittingMemberAdd(prev => ({ ...prev, [member.id]: true }));
-
-      const updatedTeamStr = currentTeamStr ? `${currentTeamStr}, ${memberEntry}` : memberEntry;
-
-      // 1. Atualiza projeto no Firestore
-      await updateDoc(doc(db, 'projects', selectedProject.id), {
-        teamMembers: updatedTeamStr
-      });
-
-      // 2. Atualiza ficha cadastral do membro para constar o projeto
-      const currentProjStr = (member.currentProjects || '').trim();
-      const updatedProjStr = currentProjStr && currentProjStr.toLowerCase() !== 'nenhum'
-        ? (currentProjStr.toLowerCase().includes(selectedProject.name.toLowerCase()) 
-            ? currentProjStr 
-            : `${currentProjStr}, ${selectedProject.name}`)
-        : selectedProject.name;
-
-      if (member.id) {
-        try {
-          await updateDoc(doc(db, 'responses', member.id), {
-            currentProjects: updatedProjStr,
-            isInProject: 'Sim'
-          });
-        } catch (respErr) {
-          console.warn('Erro ao atualizar respostas do membro (não bloqueante):', respErr);
-        }
-      }
-
-      // 3. Auditoria
-      await logAuditAction({
-        action: 'Alocação em Projeto',
-        targetMemberId: member.id || '',
-        targetMemberName: memberName,
-        targetMemberEmail: member.email || '',
-        details: `Membro "${memberName}" adicionado à equipe do projeto "${selectedProject.name}" como "${assignedRole}" por ${currentUserName || activeEmail} (via Filtro do Dashboard)`,
-        newValue: JSON.stringify({ project: selectedProject.name, role: assignedRole, teamMembers: updatedTeamStr }),
-        performedByEmail: activeEmail,
-        performedByName: currentUserName || (isSuperAdminEmail ? 'Super Admin' : 'Membro do RH')
-      });
-
-      // 4. Atualização de estado local imediata
-      const updatedProject: ProjectItem = { ...selectedProject, teamMembers: updatedTeamStr };
-      setSelectedProject(updatedProject);
-      setProjects(prev => prev.map(p => p.id === selectedProject.id ? updatedProject : p));
-      setAllResponses(prev => prev.map(m => m.id === member.id ? { ...m, currentProjects: updatedProjStr, isInProject: 'Sim' } : m));
-
-      toast.success(`"${memberName}" adicionado(a) à equipe como "${assignedRole}"!`);
-    } catch (err) {
-      console.error('Erro ao adicionar membro à equipe:', err);
-      toast.error('Erro ao adicionar membro à equipe.');
-    } finally {
-      setIsSubmittingMemberAdd(prev => ({ ...prev, [member.id]: false }));
-    }
-  };
-
-  // Remove membro da equipe com confirmação
-  const handleRemoveMemberFromCurrentProject = async (rawMemberStr: string) => {
-    if (!selectedProject?.id) return;
-    const cleanName = rawMemberStr.replace(/\([^)]*\)/g, '').trim();
-    if (!confirm(`Tem certeza que deseja remover "${cleanName}" da equipe do projeto "${selectedProject.name}"?`)) {
-      return;
-    }
-
-    try {
-      const currentTeamStr = (selectedProject.teamMembers || '').trim();
-      const membersList = currentTeamStr.split(/,|\n/).map(s => s.trim()).filter(Boolean);
-      const updatedMembersList = membersList.filter(s => {
-        const name = s.replace(/\([^)]*\)/g, '').trim().toLowerCase();
-        return name !== cleanName.toLowerCase();
-      });
-      const updatedTeamStr = updatedMembersList.join(', ');
-
-      await updateDoc(doc(db, 'projects', selectedProject.id), {
-        teamMembers: updatedTeamStr
-      });
-
-      // Atualiza o documento em responses se o membro for localizado
-      const matchedMember = allResponses.find(m => (m.name || '').toLowerCase().trim() === cleanName.toLowerCase());
-      if (matchedMember?.id) {
-        try {
-          const curProj = (matchedMember.currentProjects || '')
-            .split(',')
-            .map((p: string) => p.trim())
-            .filter((p: string) => p && p.toLowerCase() !== selectedProject.name.toLowerCase())
-            .join(', ');
-          await updateDoc(doc(db, 'responses', matchedMember.id), {
-            currentProjects: curProj,
-            isInProject: curProj ? 'Sim' : 'Não'
-          });
-          setAllResponses(prev => prev.map(m => m.id === matchedMember.id ? { ...m, currentProjects: curProj, isInProject: curProj ? 'Sim' : 'Não' } : m));
-        } catch (respErr) {
-          console.warn('Erro ao atualizar respostas do membro removido:', respErr);
-        }
-      }
-
-      await logAuditAction({
-        action: 'Desalocação de Projeto',
-        targetMemberName: cleanName,
-        targetMemberEmail: matchedMember?.email || '',
-        details: `Membro "${cleanName}" removido da equipe do projeto "${selectedProject.name}" por ${currentUserName || activeEmail}`,
-        previousValue: currentTeamStr,
-        newValue: updatedTeamStr,
-        performedByEmail: activeEmail,
-        performedByName: currentUserName || (isSuperAdminEmail ? 'Super Admin' : 'Membro do RH')
-      });
-
-      const updatedProject: ProjectItem = { ...selectedProject, teamMembers: updatedTeamStr };
-      setSelectedProject(updatedProject);
-      setProjects(prev => prev.map(p => p.id === selectedProject.id ? updatedProject : p));
-
-      toast.success(`"${cleanName}" removido(a) da equipe.`);
-    } catch (err) {
-      console.error('Erro ao remover membro da equipe:', err);
-      toast.error('Erro ao remover membro da equipe');
-    }
-  };
 
   const handleClaimTask = async (task: TaskItem) => {
     if (!task.id) return;
@@ -1433,27 +1119,14 @@ export default function ProjectsHub({
                       <span className="truncate max-w-[130px]">Líder: <strong className="text-gray-200">{proj.leader}</strong></span>
                       <div className="flex items-center gap-2">
                         {canEditGames && (
-                          <>
-                            <button
-                              type="button"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                handleBroadcastProjectEmail(proj);
-                              }}
-                              className="px-2 py-1 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 text-[11px] font-['Space_Mono'] flex items-center gap-1 cursor-pointer transition-colors"
-                              title="Abrir aba no navegador para notificar membros deste projeto por e-mail"
-                            >
-                              <Mail size={12} />
-                            </button>
-                            <button
-                              type="button"
-                              onClick={(e) => handleOpenEditProject(proj, e)}
-                              className="px-2.5 py-1 bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border border-emerald-500/40 text-[11px] font-['Space_Mono'] flex items-center gap-1 cursor-pointer transition-colors"
-                              title="Editar informações do jogo"
-                            >
-                              <Edit2 size={12} /> Editar
-                            </button>
-                          </>
+                          <button
+                            type="button"
+                            onClick={(e) => handleOpenEditProject(proj, e)}
+                            className="px-2.5 py-1 bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border border-emerald-500/40 text-[11px] font-['Space_Mono'] flex items-center gap-1 cursor-pointer transition-colors"
+                            title="Editar informações do jogo"
+                          >
+                            <Edit2 size={12} /> Editar
+                          </button>
                         )}
                         <span className="text-emerald-400 group-hover:translate-x-0.5 transition-transform flex items-center gap-1 font-['Space_Mono'] font-bold text-[11px]">
                           Ver Ficha <ChevronRight size={13} />
@@ -1548,16 +1221,6 @@ export default function ProjectsHub({
                       Dedicação: <strong className="text-gray-200 capitalize">{opening.estimatedTime}</strong>
                     </span>
                     <div className="flex items-center gap-2">
-                      {canEditGames && (
-                        <button
-                          type="button"
-                          onClick={() => handleBroadcastOpeningEmail(opening)}
-                          title="Abrir aba no navegador para divulgar esta vaga aos membros da liga por e-mail"
-                          className="p-1.5 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 text-xs transition-colors cursor-pointer"
-                        >
-                          <Mail size={13} />
-                        </button>
-                      )}
                       {isAdmin && (
                         <button
                           onClick={() => handleDeleteOpening(opening)}
@@ -1760,17 +1423,6 @@ export default function ProjectsHub({
                         <span className="flex items-center gap-1"><CheckCircle2 size={14} /> Entregue com sucesso!</span>
                         <Award size={16} />
                       </div>
-                    )}
-
-                    {canEditGames && (
-                      <button
-                        type="button"
-                        onClick={() => handleBroadcastTaskEmail(task)}
-                        title="Abrir aba no navegador para notificar membros sobre esta microtarefa por e-mail"
-                        className="w-full py-1 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 text-[11px] font-['Space_Mono'] transition-colors cursor-pointer flex items-center justify-center gap-1.5"
-                      >
-                        <Mail size={12} /> Divulgar por E-mail
-                      </button>
                     )}
 
                     {isAdmin && (
@@ -2137,142 +1789,15 @@ export default function ProjectsHub({
                 </div>
               </div>
 
-              {/* Membros da Equipe (Alocação com Filtro do Dashboard) */}
-              <div className="p-4 bg-gray-900 border border-gray-800 space-y-4">
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-gray-800">
-                  <div className="flex items-center gap-3">
-                    <div className="p-2 bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 shrink-0 flex items-center justify-center">
-                      <Users size={16} />
-                    </div>
-                    <div className="flex flex-col justify-center">
-                      <div className="flex items-center gap-2">
-                        <span className="text-xs font-bold text-white font-['Space_Mono'] uppercase tracking-wider leading-none">
-                          Membros da Equipe do Jogo
-                        </span>
-                        <span className="inline-flex items-center px-2 py-0.5 bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 text-[10px] font-bold font-['Space_Mono'] leading-none">
-                          {parseTeamMembersList(selectedProject.teamMembers).length} {parseTeamMembersList(selectedProject.teamMembers).length === 1 ? 'membro' : 'membros'}
-                        </span>
-                      </div>
-                      <p className="text-[11px] text-gray-400 font-['Space_Mono'] mt-1 leading-normal">
-                        Alocação oficial de integrantes na produção deste projeto
-                      </p>
-                    </div>
-                  </div>
-
-                  {canEditGames && (
-                    <button
-                      type="button"
-                      onClick={() => setIsAddTeamMemberModalOpen(true)}
-                      className="inline-flex items-center gap-2 px-3 py-1.5 bg-emerald-500 hover:bg-emerald-400 text-gray-950 font-bold text-xs font-['Space_Mono'] transition-all shadow-sm shrink-0 cursor-pointer self-start sm:self-auto"
-                      title="Adicionar membros da liga usando o filtro do dashboard"
-                    >
-                      <UserPlus size={13} />
-                      + Adicionar Membros (Filtro do Dashboard)
-                    </button>
-                  )}
+              {/* Equipe Atual */}
+              {selectedProject.teamMembers && (
+                <div className="p-4 bg-gray-900 border border-gray-800">
+                  <span className="text-[10px] font-bold text-gray-400 uppercase font-['Space_Mono'] block mb-1">
+                    Membros da Equipe
+                  </span>
+                  <p className="text-gray-200">{selectedProject.teamMembers}</p>
                 </div>
-
-                {/* Lista de Membros da Equipe */}
-                {parseTeamMembersList(selectedProject.teamMembers).length === 0 ? (
-                  <div className="py-6 px-4 bg-black/30 border border-dashed border-gray-800 text-center space-y-2.5">
-                    <Users size={24} className="mx-auto text-gray-600" />
-                    <div>
-                      <p className="text-xs font-semibold text-gray-300 font-['Space_Mono']">
-                        Nenhum membro adicional cadastrado na equipe além do líder ({selectedProject.leader}).
-                      </p>
-                      <p className="text-[11px] text-gray-500 max-w-md mx-auto mt-0.5 font-['Space_Mono']">
-                        {canEditGames
-                          ? 'Super Admins e Membros do RH podem buscar membros por área e disponibilidade através do filtro do Dashboard.'
-                          : 'Aguardando alocações de novos integrantes pela diretoria e RH.'}
-                      </p>
-                    </div>
-                    {canEditGames && (
-                      <button
-                        type="button"
-                        onClick={() => setIsAddTeamMemberModalOpen(true)}
-                        className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/40 text-xs font-bold font-['Space_Mono'] transition-colors cursor-pointer"
-                      >
-                        <UserPlus size={13} />
-                        Buscar Membros no Dashboard
-                      </button>
-                    )}
-                  </div>
-                ) : (
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                    {parseTeamMembersList(selectedProject.teamMembers).map((item, idx) => {
-                      const isLeaderRole = item.isLeader || item.name.toLowerCase() === (selectedProject.leader || '').toLowerCase();
-                      const roleLower = item.role.toLowerCase();
-                      
-                      let roleBadgeClass = 'bg-gray-800 text-gray-300 border-gray-700';
-                      let roleIcon = '🎮';
-                      if (isLeaderRole) {
-                        roleBadgeClass = 'bg-amber-500/20 text-amber-300 border-amber-500/40 font-bold';
-                        roleIcon = '👑';
-                      } else if (roleLower.includes('dev') || roleLower.includes('prog') || roleLower.includes('código')) {
-                        roleBadgeClass = 'bg-cyan-500/20 text-cyan-300 border-cyan-500/40';
-                        roleIcon = '💻';
-                      } else if (roleLower.includes('art') || roleLower.includes('2d') || roleLower.includes('3d') || roleLower.includes('visual')) {
-                        roleBadgeClass = 'bg-purple-500/20 text-purple-300 border-purple-500/40';
-                        roleIcon = '🎨';
-                      } else if (roleLower.includes('design') || roleLower.includes('level') || roleLower.includes('gd')) {
-                        roleBadgeClass = 'bg-pink-500/20 text-pink-300 border-pink-500/40';
-                        roleIcon = '🕹️';
-                      } else if (roleLower.includes('som') || roleLower.includes('áudio') || roleLower.includes('audio') || roleLower.includes('sfx')) {
-                        roleBadgeClass = 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40';
-                        roleIcon = '🎵';
-                      } else if (roleLower.includes('roteiro') || roleLower.includes('narrativa') || roleLower.includes('história')) {
-                        roleBadgeClass = 'bg-amber-500/15 text-amber-300 border-amber-500/30';
-                        roleIcon = '📜';
-                      }
-
-                      return (
-                        <div
-                          key={`${item.name}-${idx}`}
-                          className="p-3 bg-black/40 border border-gray-800/80 hover:border-gray-700 flex items-center justify-between gap-3 transition-colors group"
-                        >
-                          <div className="flex items-center gap-2.5 min-w-0">
-                            <div className="w-8 h-8 rounded-full bg-gray-800 border border-gray-700 flex items-center justify-center text-xs font-bold text-gray-200 shrink-0 font-['Space_Mono']">
-                              {item.name.charAt(0).toUpperCase()}
-                            </div>
-                            <div className="min-w-0">
-                              <div className="flex items-center gap-1.5 flex-wrap">
-                                <span className="font-bold text-white text-xs truncate max-w-[150px]">
-                                  {item.name}
-                                </span>
-                                <span className={`px-2 py-0.5 text-[10px] border font-['Space_Mono'] flex items-center gap-1 ${roleBadgeClass}`}>
-                                  <span>{roleIcon}</span>
-                                  <span>{item.role}</span>
-                                </span>
-                              </div>
-                              {item.responseMatch ? (
-                                <p className="text-[10px] text-gray-400 font-['Space_Mono'] truncate mt-0.5">
-                                  {item.responseMatch.discordUser && <span>@{item.responseMatch.discordUser.replace(/^@/, '')} &bull; </span>}
-                                  <span>{item.responseMatch.course || item.responseMatch.email}</span>
-                                </p>
-                              ) : (
-                                <p className="text-[10px] text-gray-500 font-['Space_Mono'] mt-0.5">
-                                  Integrante alocado
-                                </p>
-                              )}
-                            </div>
-                          </div>
-
-                          {canEditGames && (
-                            <button
-                              type="button"
-                              onClick={() => handleRemoveMemberFromCurrentProject(item.raw)}
-                              className="p-1 text-gray-500 hover:text-red-400 hover:bg-red-500/10 transition-colors opacity-70 group-hover:opacity-100 cursor-pointer shrink-0"
-                              title={`Remover "${item.name}" da equipe`}
-                            >
-                              <X size={14} />
-                            </button>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
+              )}
 
               {/* Check-in Status */}
               <div className="p-4 bg-gray-950 border border-gray-800 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
@@ -2324,7 +1849,7 @@ export default function ProjectsHub({
                     <Trash2 size={13} /> Excluir Projeto
                   </button>
                 )}
-                {canEditGames && (
+                {isAdmin && (
                   <button
                     type="button"
                     onClick={() => handleBroadcastProjectEmail(selectedProject)}
@@ -3185,395 +2710,6 @@ export default function ProjectsHub({
           </div>
         </div>
       )}
-
-      {/* MODAL: ADICIONAR MEMBROS DA EQUIPE VIA FILTRO DO DASHBOARD */}
-      {isAddTeamMemberModalOpen && selectedProject && (
-        <div 
-          className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/85 backdrop-blur-md animate-in fade-in duration-200"
-          onClick={() => setIsAddTeamMemberModalOpen(false)}
-        >
-          <div 
-            className="bg-[#141416] border border-emerald-500/40 w-full max-w-4xl max-h-[90vh] flex flex-col shadow-2xl overflow-hidden text-left"
-            onClick={e => e.stopPropagation()}
-          >
-            {/* Header */}
-            <div className="p-5 border-b border-gray-800 bg-black/40 flex items-center justify-between shrink-0">
-              <div className="flex items-center gap-3">
-                <div className="p-2.5 bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 shrink-0">
-                  <UserPlus size={22} />
-                </div>
-                <div>
-                  <div className="flex items-center gap-2">
-                    <h3 className="text-base font-bold text-white font-['Syne'] uppercase">
-                      Adicionar Membros à Equipe
-                    </h3>
-                    <span className="px-2 py-0.5 bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 text-[10px] font-['Space_Mono'] font-bold">
-                      {selectedProject.name}
-                    </span>
-                  </div>
-                  <p className="text-xs text-gray-400 font-['Space_Mono'] mt-0.5">
-                    Filtro oficial do Dashboard para busca por nome, área/função e disponibilidade
-                  </p>
-                </div>
-              </div>
-
-              <button
-                type="button"
-                onClick={() => setIsAddTeamMemberModalOpen(false)}
-                className="p-1.5 text-gray-400 hover:text-white hover:bg-gray-800 transition-colors cursor-pointer"
-              >
-                <X size={20} />
-              </button>
-            </div>
-
-            {/* Filtros idênticos ao Dashboard */}
-            <div className="p-5 bg-[rgba(255,255,255,0.02)] border-b border-gray-800 space-y-3 shrink-0">
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-                {/* 1. Busca textual */}
-                <div>
-                  <label className="block text-[10px] font-bold text-gray-400 uppercase font-['Space_Mono'] mb-1 flex items-center gap-1.5">
-                    <Search size={12} className="text-emerald-400" />
-                    <span>Nome ou E-mail</span>
-                  </label>
-                  <div className="relative">
-                    <input
-                      type="text"
-                      placeholder="Ex: Clara, Lucas, @ufpe.br..."
-                      value={teamMemberSearch}
-                      onChange={e => setTeamMemberSearch(e.target.value)}
-                      className="w-full bg-[#161619] border border-gray-700 py-2 pl-2.5 pr-7 text-xs text-white font-['Space_Mono'] outline-none focus:border-emerald-500"
-                    />
-                    {teamMemberSearch && (
-                      <button
-                        type="button"
-                        onClick={() => setTeamMemberSearch('')}
-                        className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-white cursor-pointer"
-                      >
-                        <X size={12} />
-                      </button>
-                    )}
-                  </div>
-                </div>
-
-                {/* 2. Função na Liga */}
-                <div>
-                  <label className="block text-[10px] font-bold text-gray-400 uppercase font-['Space_Mono'] mb-1 flex items-center gap-1.5">
-                    <Briefcase size={12} className="text-emerald-400" />
-                    <span>Função na Liga</span>
-                  </label>
-                  <select
-                    value={teamMemberRoleFilter}
-                    onChange={e => setTeamMemberRoleFilter(e.target.value)}
-                    className="w-full bg-[#161619] border border-gray-700 py-2 px-2.5 text-xs text-white font-['Space_Mono'] outline-none focus:border-emerald-500 cursor-pointer"
-                  >
-                    <option value="all">Todas as Funções ({allResponses.length})</option>
-                    {distinctMemberRoles.map(role => {
-                      const count = allResponses.filter(m => (m.leagueRole || '').toLowerCase().includes(role.toLowerCase())).length;
-                      return (
-                        <option key={role} value={role}>{role} ({count})</option>
-                      );
-                    })}
-                  </select>
-                </div>
-
-                {/* 3. Status de Projeto */}
-                <div>
-                  <label className="block text-[10px] font-bold text-gray-400 uppercase font-['Space_Mono'] mb-1 flex items-center gap-1.5">
-                    <Gamepad2 size={12} className="text-emerald-400" />
-                    <span>Status de Projeto</span>
-                  </label>
-                  <select
-                    value={teamMemberProjectStatusFilter}
-                    onChange={e => setTeamMemberProjectStatusFilter(e.target.value)}
-                    className="w-full bg-[#161619] border border-gray-700 py-2 px-2.5 text-xs text-white font-['Space_Mono'] outline-none focus:border-emerald-500 cursor-pointer"
-                  >
-                    <option value="all">Todos os Status</option>
-                    <option value="waiting_invite">⏳ Quer Entrar / Aguardando</option>
-                    <option value="no_project">⚪ Sem Projeto / Disponíveis</option>
-                    <option value="in_project">🎮 Já em Projeto</option>
-                    <option value="observing">🔍 Observando</option>
-                  </select>
-                </div>
-
-                {/* 4. Situação Cadastral */}
-                <div>
-                  <label className="block text-[10px] font-bold text-gray-400 uppercase font-['Space_Mono'] mb-1 flex items-center gap-1.5">
-                    <Users size={12} className="text-emerald-400" />
-                    <span>Situação</span>
-                  </label>
-                  <div className="flex gap-1.5">
-                    <select
-                      value={teamMemberStatusFilter}
-                      onChange={e => setTeamMemberStatusFilter(e.target.value as any)}
-                      className="flex-1 bg-[#161619] border border-gray-700 py-2 px-2 text-xs text-white font-['Space_Mono'] outline-none focus:border-emerald-500 cursor-pointer"
-                    >
-                      <option value="all">Todos</option>
-                      <option value="active">Ativos</option>
-                      <option value="former">Ex-membros</option>
-                    </select>
-                    {(teamMemberSearch || teamMemberRoleFilter !== 'all' || teamMemberProjectStatusFilter !== 'all' || teamMemberStatusFilter !== 'all') && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setTeamMemberSearch('');
-                          setTeamMemberRoleFilter('all');
-                          setTeamMemberProjectStatusFilter('all');
-                          setTeamMemberStatusFilter('all');
-                        }}
-                        className="px-2 py-2 bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/30 text-xs font-['Space_Mono'] cursor-pointer"
-                        title="Limpar filtros"
-                      >
-                        <RotateCcw size={12} />
-                      </button>
-                    )}
-                  </div>
-                </div>
-              </div>
-
-              {/* Atalhos Rápidos de Filtro */}
-              <div className="pt-2 border-t border-gray-800/60 flex flex-wrap items-center gap-1.5 text-xs font-['Space_Mono']">
-                <span className="text-[10px] text-gray-500 uppercase tracking-wider font-semibold mr-1 flex items-center gap-1">
-                  <SlidersHorizontal size={11} /> Atalhos:
-                </span>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setTeamMemberSearch('');
-                    setTeamMemberRoleFilter('all');
-                    setTeamMemberProjectStatusFilter('all');
-                  }}
-                  className={`px-2 py-0.5 text-[11px] border cursor-pointer transition-colors ${
-                    teamMemberRoleFilter === 'all' && teamMemberProjectStatusFilter === 'all'
-                      ? 'bg-emerald-500/20 border-emerald-500 text-emerald-300 font-bold'
-                      : 'bg-gray-900 border-gray-700 text-gray-400 hover:text-white'
-                  }`}
-                >
-                  Todos
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setTeamMemberProjectStatusFilter(teamMemberProjectStatusFilter === 'waiting_invite' ? 'all' : 'waiting_invite')}
-                  className={`px-2 py-0.5 text-[11px] border cursor-pointer transition-colors ${
-                    teamMemberProjectStatusFilter === 'waiting_invite'
-                      ? 'bg-amber-500/20 border-amber-500 text-amber-300 font-bold'
-                      : 'bg-gray-900 border-gray-700 text-gray-400 hover:text-white'
-                  }`}
-                >
-                  ⏳ Quer Entrar
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setTeamMemberRoleFilter(teamMemberRoleFilter.toLowerCase().includes('program') ? 'all' : 'Programação')}
-                  className={`px-2 py-0.5 text-[11px] border cursor-pointer transition-colors ${
-                    teamMemberRoleFilter.toLowerCase().includes('program')
-                      ? 'bg-cyan-500/20 border-cyan-500 text-cyan-300 font-bold'
-                      : 'bg-gray-900 border-gray-700 text-gray-400 hover:text-white'
-                  }`}
-                >
-                  💻 Programação
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setTeamMemberRoleFilter(teamMemberRoleFilter.toLowerCase().includes('arte') ? 'all' : 'Arte')}
-                  className={`px-2 py-0.5 text-[11px] border cursor-pointer transition-colors ${
-                    teamMemberRoleFilter.toLowerCase().includes('arte')
-                      ? 'bg-purple-500/20 border-purple-500 text-purple-300 font-bold'
-                      : 'bg-gray-900 border-gray-700 text-gray-400 hover:text-white'
-                  }`}
-                >
-                  🎨 Arte
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setTeamMemberRoleFilter(teamMemberRoleFilter.toLowerCase().includes('game design') ? 'all' : 'Game Design')}
-                  className={`px-2 py-0.5 text-[11px] border cursor-pointer transition-colors ${
-                    teamMemberRoleFilter.toLowerCase().includes('game design')
-                      ? 'bg-pink-500/20 border-pink-500 text-pink-300 font-bold'
-                      : 'bg-gray-900 border-gray-700 text-gray-400 hover:text-white'
-                  }`}
-                >
-                  🕹️ Game Design
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setTeamMemberRoleFilter(teamMemberRoleFilter.toLowerCase().includes('som') || teamMemberRoleFilter.toLowerCase().includes('áudio') ? 'all' : 'Som')}
-                  className={`px-2 py-0.5 text-[11px] border cursor-pointer transition-colors ${
-                    teamMemberRoleFilter.toLowerCase().includes('som') || teamMemberRoleFilter.toLowerCase().includes('áudio')
-                      ? 'bg-emerald-500/20 border-emerald-500 text-emerald-300 font-bold'
-                      : 'bg-gray-900 border-gray-700 text-gray-400 hover:text-white'
-                  }`}
-                >
-                  🎵 Som / Áudio
-                </button>
-              </div>
-
-              {/* Contador de resultados */}
-              <div className="flex items-center justify-between text-[11px] font-['Space_Mono'] text-gray-400 pt-1">
-                <span>
-                  Exibindo <strong className="text-emerald-400">{filteredAddMembers.length}</strong> de {allResponses.length} membros
-                </span>
-                <span className="text-[10px] text-gray-500">
-                  Defina a função específica e clique em "Adicionar ao Projeto"
-                </span>
-              </div>
-            </div>
-
-            {/* Lista com scroll dos membros filtrados */}
-            <div className="flex-1 overflow-y-auto p-5 space-y-3 max-h-[50vh]">
-              {filteredAddMembers.length === 0 ? (
-                <div className="py-12 text-center text-gray-400 font-['Space_Mono'] space-y-2">
-                  <p className="text-sm">Nenhum membro encontrado com os filtros selecionados.</p>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setTeamMemberSearch('');
-                      setTeamMemberRoleFilter('all');
-                      setTeamMemberProjectStatusFilter('all');
-                      setTeamMemberStatusFilter('all');
-                    }}
-                    className="text-xs text-emerald-400 hover:text-emerald-300 underline cursor-pointer"
-                  >
-                    Redefinir Filtros
-                  </button>
-                </div>
-              ) : (
-                filteredAddMembers.map(member => {
-                  const alreadyInTeam = isMemberInProject(member.name, selectedProject.teamMembers);
-                  const isCurrentSubmitting = Boolean(isSubmittingMemberAdd[member.id]);
-                  const defaultRole = memberAssignedRoles[member.id] || (member.leagueRole ? String(member.leagueRole).split(',')[0].trim() : 'Equipe');
-
-                  return (
-                    <div
-                      key={member.id}
-                      className={`p-4 border transition-all flex flex-col sm:flex-row sm:items-center justify-between gap-4 ${
-                        alreadyInTeam
-                          ? 'bg-emerald-950/15 border-emerald-500/40'
-                          : 'bg-black/40 border-gray-800 hover:border-gray-700'
-                      }`}
-                    >
-                      <div className="flex items-start gap-3 min-w-0 flex-1">
-                        <div className="w-10 h-10 rounded-full bg-gray-800 border border-gray-700 flex items-center justify-center text-sm font-bold text-emerald-400 shrink-0 font-['Space_Mono']">
-                          {(member.name || 'M').charAt(0).toUpperCase()}
-                        </div>
-                        <div className="min-w-0 space-y-1">
-                          <div className="flex items-center gap-2 flex-wrap">
-                            <span className="font-bold text-white text-sm">
-                              {member.name}
-                            </span>
-                            {member.discordUser && (
-                              <span className="text-[11px] text-gray-400 font-['Space_Mono']">
-                                @{member.discordUser.replace(/^@/, '')}
-                              </span>
-                            )}
-                            {alreadyInTeam && (
-                              <span className="px-2 py-0.5 bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 text-[10px] font-bold font-['Space_Mono'] flex items-center gap-1">
-                                <Check size={11} /> Já na Equipe
-                              </span>
-                            )}
-                          </div>
-
-                          <div className="flex flex-wrap items-center gap-1.5 text-[11px] font-['Space_Mono']">
-                            <span className="text-gray-400">
-                              {member.course || 'Curso não informado'} {member.period ? `(${member.period})` : ''}
-                            </span>
-                            <span className="text-gray-600">&bull;</span>
-                            <span className="text-emerald-400/90">
-                              {member.email}
-                            </span>
-                          </div>
-
-                          <div className="flex flex-wrap items-center gap-1.5 pt-1">
-                            {String(member.leagueRole || 'Geral').split(',').map((r: string, rIdx: number) => (
-                              <span
-                                key={rIdx}
-                                className="px-2 py-0.5 bg-gray-900 border border-gray-700 text-gray-300 text-[10px] font-['Space_Mono'] rounded-sm"
-                              >
-                                {r.trim()}
-                              </span>
-                            ))}
-                            {member.weeklyHours && (
-                              <span className="px-1.5 py-0.5 bg-blue-500/10 text-blue-300 border border-blue-500/20 text-[10px] font-['Space_Mono']">
-                                ⏱️ {member.weeklyHours}
-                              </span>
-                            )}
-                            {member.isInProject === 'Sim' ? (
-                              <span className="px-1.5 py-0.5 bg-cyan-500/10 text-cyan-300 border border-cyan-500/20 text-[10px] font-['Space_Mono']">
-                                🎮 Em: {member.currentProjects || 'Projeto'}
-                              </span>
-                            ) : (
-                              <span className="px-1.5 py-0.5 bg-amber-500/10 text-amber-300 border border-amber-500/20 text-[10px] font-['Space_Mono']">
-                                ⏳ Disponível / Sem Projeto
-                              </span>
-                            )}
-                          </div>
-                        </div>
-                      </div>
-
-                      {/* Controle de Função & Ação de Adicionar */}
-                      <div className="flex sm:flex-col items-end gap-2 shrink-0 self-stretch sm:self-auto justify-between sm:justify-center border-t sm:border-t-0 pt-2 sm:pt-0 border-gray-800">
-                        <div className="flex items-center gap-1.5">
-                          <label className="text-[10px] font-['Space_Mono'] text-gray-400 uppercase hidden sm:inline">
-                            Papel:
-                          </label>
-                          <input
-                            type="text"
-                            placeholder="Papel no jogo..."
-                            disabled={alreadyInTeam}
-                            value={memberAssignedRoles[member.id] !== undefined ? memberAssignedRoles[member.id] : defaultRole}
-                            onChange={e => setMemberAssignedRoles({ ...memberAssignedRoles, [member.id]: e.target.value })}
-                            className="bg-[#161619] border border-gray-700 px-2 py-1 text-xs text-white font-['Space_Mono'] w-36 outline-none focus:border-emerald-500 disabled:opacity-50"
-                          />
-                        </div>
-
-                        {alreadyInTeam ? (
-                          <button
-                            type="button"
-                            disabled
-                            className="px-3.5 py-1.5 bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 text-xs font-bold font-['Space_Mono'] flex items-center gap-1.5 cursor-not-allowed opacity-80"
-                          >
-                            <Check size={13} />
-                            Alocado
-                          </button>
-                        ) : (
-                          <button
-                            type="button"
-                            disabled={isCurrentSubmitting}
-                            onClick={() => handleAddMemberToCurrentProject(member, memberAssignedRoles[member.id] || defaultRole)}
-                            className="px-3.5 py-1.5 bg-emerald-500 hover:bg-emerald-400 text-gray-950 font-bold text-xs font-['Space_Mono'] flex items-center gap-1.5 cursor-pointer transition-all shadow-sm"
-                          >
-                            <UserPlus size={13} />
-                            {isCurrentSubmitting ? 'Adicionando...' : '+ Adicionar à Equipe'}
-                          </button>
-                        )}
-                      </div>
-                    </div>
-                  );
-                })
-              )}
-            </div>
-
-            {/* Footer do Modal */}
-            <div className="p-4 border-t border-gray-800 bg-black/40 flex items-center justify-between shrink-0">
-              <span className="text-xs font-['Space_Mono'] text-gray-400">
-                Projeto atual: <strong className="text-white">{selectedProject.name}</strong>
-              </span>
-              <button
-                type="button"
-                onClick={() => setIsAddTeamMemberModalOpen(false)}
-                className="px-4 py-2 bg-gray-800 hover:bg-gray-700 text-white text-xs font-['Space_Mono'] font-bold cursor-pointer transition-colors"
-              >
-                Concluir & Fechar
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* MODAL DE ENVIO MANUAL DE E-MAILS (GMAIL WEB & CLIENTE LOCAL) */}
-      <ManualEmailModal
-        email={emailModalData}
-        onClose={() => setEmailModalData(null)}
-      />
     </div>
   );
 }

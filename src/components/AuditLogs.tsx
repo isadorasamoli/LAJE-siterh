@@ -51,7 +51,7 @@ export default function AuditLogs({ isAdmin = false, currentUserEmail, onNavigat
   const [isDeleting, setIsDeleting] = useState(false);
 
   const activeEmail = (currentUserEmail || auth.currentUser?.email || '').toLowerCase().trim();
-  const canDeleteLogs = activeEmail === 'isadorasdml@gmail.com' || activeEmail === 'isadora.mlima@ufpe.br' || activeEmail.startsWith('isadora.mlima@ufpe');
+  const canDeleteLogs = activeEmail === 'isadora.mlima@ufpe.br' || activeEmail.startsWith('isadora.mlima@ufpe');
 
   const fetchLogs = async () => {
     try {

@@ -173,10 +173,10 @@ service cloud.firestore {
         && isValidResponse(incoming());
         
       allow update: if isSignedIn()
-        && (isAdmin() || isRHorSuperAdmin() || (incoming().userId == existing().userId && existing().userId == request.auth.uid))
+        && (isAdmin() || (incoming().userId == existing().userId && existing().userId == request.auth.uid))
         && isValidResponse(incoming());
         
-      allow delete: if isAdmin() || isRHorSuperAdmin();
+      allow delete: if isAdmin();
     }
 
     match /events/{eventId} {
