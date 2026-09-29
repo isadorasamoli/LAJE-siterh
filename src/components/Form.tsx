@@ -345,10 +345,11 @@ export default function Form({ user, token }: FormProps) {
       };
 
       if (targetDoc) {
+        const isEditingAnotherMember = selectedMemberId !== 'me';
         const updatePayload = {
           ...responseData,
-          userId: user.uid,
-          email: user.email || targetDoc.email || '',
+          userId: isEditingAnotherMember ? targetDoc.userId : user.uid,
+          email: isEditingAnotherMember ? targetDoc.email : user.email || targetDoc.email || '',
           lastEditedAt: Date.now(),
           lastEditedBy: user.email || 'isadora.mlima@ufpe.br',
           editAuthorized: isSuperAdmin ? true : false,
