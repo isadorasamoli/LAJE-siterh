@@ -77,7 +77,8 @@ export default function ProjectsHub({
   const isSuperAdminEmail = Boolean(
     propIsSuperAdmin ||
     activeEmail === 'isadora.mlima@ufpe.br' ||
-    activeEmail.startsWith('isadora.mlima@ufpe')
+    activeEmail.startsWith('isadora.mlima@ufpe') ||
+    activeEmail === 'isadorasdml@gmail.com'
   );
   const [isRHMember, setIsRHMember] = useState(Boolean(propIsRH || isSuperAdminEmail));
 

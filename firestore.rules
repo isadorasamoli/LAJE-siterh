@@ -18,26 +18,21 @@ service cloud.firestore {
           request.auth.token.email.lower().matches('^isadora\\.mlima@ufpe.*') ||
           request.auth.token.email.lower() == 'isadorasdml@gmail.com'
         )) || 
-        (request.auth.token.email != null && (exists(/databases/$(database)/documents/admins/$(request.auth.token.email)) || exists(/databases/$(database)/documents/admins/$(request.auth.token.email.lower()))))
-      );
-    }
-
-    function isRHorSuperAdmin() {
-      return isSignedIn() && (
-        isAdmin() ||
         (request.auth.token.email != null && (
-          request.auth.token.email.lower() == 'isadora.mlima@ufpe.br' || 
-          request.auth.token.email.lower() == 'isadora.mlima@ufpe' ||
-          request.auth.token.email.lower().matches('^isadora\\.mlima@ufpe.*') ||
-          request.auth.token.email.lower() == 'isadorasdml@gmail.com'
+          exists(/databases/$(database)/documents/admins/$(request.auth.token.email)) || 
+          exists(/databases/$(database)/documents/admins/$(request.auth.token.email.lower()))
         )) ||
         (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && (
           get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isRH == true ||
           get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isDiretorio == true ||
           (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.leagueRole != null &&
-           get(/databases/$(database)/documents/users/$(request.auth.uid)).data.leagueRole.matches('.*(RH|Recursos Humanos|Diretoria|Diretório|Diretoria).*'))
+           get(/databases/$(database)/documents/users/$(request.auth.uid)).data.leagueRole.matches('.*(RH|Recursos Humanos|Diretoria|Diretório).*'))
         ))
       );
+    }
+
+    function isRHorSuperAdmin() {
+      return isAdmin();
     }
 
     function incoming() {
@@ -188,18 +183,34 @@ service cloud.firestore {
 
     // 4. Match Blocks
     match /responses/{responseId} {
-      allow read: if isSignedIn();
+      // Leitura global para administradores; membros comuns acessam apenas os próprios dados
+      allow read: if isSignedIn() && (
+        isAdmin() ||
+        (resource != null && (
+          resource.data.userId == request.auth.uid ||
+          (request.auth.token.email != null && resource.data.email != null && resource.data.email.lower() == request.auth.token.email.lower())
+        ))
+      );
       
+      // Criação global para administradores; membros comuns criam apenas com seu próprio userId
       allow create: if isSignedIn()
         && isValidId(responseId)
-        && (isRHorSuperAdmin() || incoming().userId == request.auth.uid)
+        && (isAdmin() || incoming().userId == request.auth.uid)
         && isValidResponse(incoming());
         
+      // Atualização global para administradores; membros comuns atualizam apenas o próprio registro
       allow update: if isSignedIn()
-        && (isRHorSuperAdmin() || (incoming().userId == existing().userId && existing().userId == request.auth.uid))
+        && (
+          isAdmin() || 
+          (
+            incoming().userId == request.auth.uid &&
+            (existing().userId == request.auth.uid || (request.auth.token.email != null && existing().email != null && existing().email.lower() == request.auth.token.email.lower()))
+          )
+        )
         && isValidResponse(incoming());
         
-      allow delete: if isRHorSuperAdmin();
+      // Exclusão restrita exclusivamente a administradores
+      allow delete: if isAdmin();
     }
 
     match /events/{eventId} {
@@ -285,20 +296,28 @@ service cloud.firestore {
     }
 
     match /doubts/{doubtId} {
-      // Dúvidas de outros membros NÃO ficam públicas para membros comuns;
-      // Membros comuns só leem as suas próprias; Super Admin e Membros do Diretório leem todas.
-      allow read: if isSignedIn() && (isRHorSuperAdmin() || resource.data.userId == request.auth.uid);
+      // Leitura global para administradores; membros comuns leem apenas suas próprias dúvidas
+      allow read: if isSignedIn() && (
+        isAdmin() || 
+        (resource != null && (
+          resource.data.userId == request.auth.uid ||
+          (request.auth.token.email != null && resource.data.authorEmail != null && resource.data.authorEmail.lower() == request.auth.token.email.lower())
+        ))
+      );
       
+      // Criação: administradores globalmente ou membros criando para si
       allow create: if isSignedIn()
         && isValidId(doubtId)
-        && incoming().userId == request.auth.uid
+        && (isAdmin() || incoming().userId == request.auth.uid)
         && isValidDoubt(incoming());
         
+      // Atualização: administradores podem responder/alterar; autor pode editar se pendente
       allow update: if isSignedIn()
-        && (isRHorSuperAdmin() || (existing().userId == request.auth.uid && existing().status == 'pendente'))
+        && (isAdmin() || (existing().userId == request.auth.uid && existing().status == 'pendente'))
         && isValidDoubt(incoming());
         
-      allow delete: if isSignedIn() && (isRHorSuperAdmin() || existing().userId == request.auth.uid);
+      // Exclusão: administradores globalmente ou autor da dúvida
+      allow delete: if isSignedIn() && (isAdmin() || existing().userId == request.auth.uid);
     }
   }
 }

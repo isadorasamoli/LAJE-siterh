@@ -101,7 +101,11 @@ export default function App() {
           const emailSnap = await getDocs(emailQ);
           if (!emailSnap.empty) {
             role = emailSnap.docs[0].data().leagueRole || '';
+          } else if (isSuperAdminEmail) {
+            role = 'RH';
           }
+        } else if (isSuperAdminEmail) {
+          role = 'RH';
         }
         setUserLeagueRole(role);
         const isRH = role.toLowerCase().includes('rh') || role.toLowerCase().includes('recursos humanos') || role.toLowerCase().includes('diretório') || role.toLowerCase().includes('diretoria') || isSuperAdminEmail;
@@ -526,37 +530,50 @@ export default function App() {
 
         <div className="w-full">
           {activeTab === 'form' && <Form user={user} token={token || ''} />}
-          {activeTab === 'projects' && (
-            <ProjectsHub 
-              isAdmin={isAdmin} 
-              isSuperAdmin={user?.email?.toLowerCase().trim() === 'isadora.mlima@ufpe.br' || (user?.email?.toLowerCase().trim().startsWith('isadora.mlima@ufpe') ?? false)}
-              isRH={userLeagueRole.toLowerCase().includes('rh') || userLeagueRole.toLowerCase().includes('recursos humanos') || userLeagueRole.toLowerCase().includes('diretório') || userLeagueRole.toLowerCase().includes('diretoria') || (user?.email?.toLowerCase().trim() === 'isadora.mlima@ufpe.br')}
-              currentUserEmail={user?.email || ''} 
-              currentUserName={user?.displayName || user?.email?.split('@')[0] || 'Membro'} 
-              currentUserRole={userLeagueRole}
-              token={token || ''}
-            />
-          )}
+          {activeTab === 'projects' && (() => {
+            const currentEmail = user?.email?.toLowerCase().trim() || '';
+            const isSuper = currentEmail === 'isadora.mlima@ufpe.br' || currentEmail === 'isadora.mlima@ufpe' || currentEmail.startsWith('isadora.mlima@ufpe') || currentEmail === 'isadorasdml@gmail.com';
+            const isRHUser = isSuper || userLeagueRole.toLowerCase().includes('rh') || userLeagueRole.toLowerCase().includes('recursos humanos') || userLeagueRole.toLowerCase().includes('diretório') || userLeagueRole.toLowerCase().includes('diretoria');
+            return (
+              <ProjectsHub 
+                isAdmin={isAdmin} 
+                isSuperAdmin={isSuper}
+                isRH={isRHUser}
+                currentUserEmail={user?.email || ''} 
+                currentUserName={user?.displayName || user?.email?.split('@')[0] || 'Membro'} 
+                currentUserRole={userLeagueRole}
+                token={token || ''}
+              />
+            );
+          })()}
           {activeTab === 'calendar' && <CalendarTab isAdmin={isAdmin} token={token || ''} />}
-          {activeTab === 'doubts' && (
-            <DirectorioDoubts
-              isAdmin={isAdmin}
-              isSuperAdmin={user?.email?.toLowerCase().trim() === 'isadora.mlima@ufpe.br' || (user?.email?.toLowerCase().trim().startsWith('isadora.mlima@ufpe') ?? false)}
-              isRH={userLeagueRole.toLowerCase().includes('rh') || userLeagueRole.toLowerCase().includes('recursos humanos') || userLeagueRole.toLowerCase().includes('diretório') || userLeagueRole.toLowerCase().includes('diretoria') || (user?.email?.toLowerCase().trim() === 'isadora.mlima@ufpe.br')}
-              currentUserEmail={user?.email || ''}
-              currentUserName={user?.displayName || user?.email?.split('@')[0] || 'Membro'}
-              currentUserUid={user?.uid || ''}
-              currentUserRole={userLeagueRole}
-              token={token || ''}
-            />
-          )}
+          {activeTab === 'doubts' && (() => {
+            const currentEmail = user?.email?.toLowerCase().trim() || '';
+            const isSuper = currentEmail === 'isadora.mlima@ufpe.br' || currentEmail === 'isadora.mlima@ufpe' || currentEmail.startsWith('isadora.mlima@ufpe') || currentEmail === 'isadorasdml@gmail.com';
+            const isRHUser = isSuper || userLeagueRole.toLowerCase().includes('rh') || userLeagueRole.toLowerCase().includes('recursos humanos') || userLeagueRole.toLowerCase().includes('diretório') || userLeagueRole.toLowerCase().includes('diretoria');
+            return (
+              <DirectorioDoubts
+                isAdmin={isAdmin}
+                isSuperAdmin={isSuper}
+                isRH={isRHUser}
+                currentUserEmail={user?.email || ''}
+                currentUserName={user?.displayName || user?.email?.split('@')[0] || 'Membro'}
+                currentUserUid={user?.uid || ''}
+                currentUserRole={userLeagueRole}
+                token={token || ''}
+              />
+            );
+          })()}
           
-          {activeTab === 'dashboard' && (
-            isAdmin ? (
+          {activeTab === 'dashboard' && (() => {
+            const currentEmail = user?.email?.toLowerCase().trim() || '';
+            const isSuper = currentEmail === 'isadora.mlima@ufpe.br' || currentEmail === 'isadora.mlima@ufpe' || currentEmail.startsWith('isadora.mlima@ufpe') || currentEmail === 'isadorasdml@gmail.com';
+            const isRHUser = isSuper || userLeagueRole.toLowerCase().includes('rh') || userLeagueRole.toLowerCase().includes('recursos humanos') || userLeagueRole.toLowerCase().includes('diretório') || userLeagueRole.toLowerCase().includes('diretoria');
+            return isAdmin ? (
               <Dashboard 
                 isAdmin={isAdmin} 
-                isSuperAdmin={user?.email?.toLowerCase().trim() === 'isadora.mlima@ufpe.br' || (user?.email?.toLowerCase().trim().startsWith('isadora.mlima@ufpe') ?? false)}
-                isRH={userLeagueRole.toLowerCase().includes('rh') || userLeagueRole.toLowerCase().includes('recursos humanos') || userLeagueRole.toLowerCase().includes('diretório') || userLeagueRole.toLowerCase().includes('diretoria') || (user?.email?.toLowerCase().trim() === 'isadora.mlima@ufpe.br')}
+                isSuperAdmin={isSuper}
+                isRH={isRHUser}
                 currentUserEmail={user?.email || ''}
                 currentUserName={user?.displayName || user?.email?.split('@')[0] || 'Administrador'}
                 currentUserUid={user?.uid || ''}
@@ -567,8 +584,8 @@ export default function App() {
                 title="Acesso Restrito: Dashboard" 
                 onNavigateHome={() => handleTabChange('form')} 
               />
-            )
-          )}
+            );
+          })()}
 
           {activeTab === 'logs' && (
             isAdmin ? (

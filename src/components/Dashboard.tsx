@@ -1,9 +1,9 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { collection, getDocs, doc, updateDoc, deleteDoc, deleteField, setDoc } from 'firebase/firestore';
-import { db } from '../lib/firebase';
+import { db, auth } from '../lib/firebase';
 import { handleFirestoreError, OperationType } from '../lib/utils';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell, LabelList } from 'recharts';
-import { Loader2, Users, Target, Activity, X, Search, Download, FileText, Trash2, Edit2, Cake, Gift, Calendar as CalendarIcon, PartyPopper, Sparkles, ChevronLeft, ChevronRight, Mail, Copy, Bell, BellRing, Check, History, Gamepad2, Briefcase, Kanban, Filter, RotateCcw, SlidersHorizontal, CheckCircle2, UserPlus, AlertTriangle } from 'lucide-react';
+import { Loader2, Users, Target, Activity, X, Search, Download, FileText, Trash2, Edit2, Cake, Gift, Calendar as CalendarIcon, PartyPopper, Sparkles, ChevronLeft, ChevronRight, Mail, Copy, Bell, BellRing, Check, History, Gamepad2, Briefcase, Kanban, Filter, RotateCcw, SlidersHorizontal, CheckCircle2, UserPlus, AlertTriangle, RefreshCw, Database, Terminal, Info, ShieldCheck } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
@@ -99,12 +99,56 @@ export default function Dashboard({
     status: 'Ativo' as 'Ativo' | 'Ex-membro',
   });
 
-  const fetchData = async () => {
-    try {
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [fetchError, setFetchError] = useState<string | null>(null);
+  const [isDebugOpen, setIsDebugOpen] = useState(false);
+  const [debugStats, setDebugStats] = useState<{
+    total: number;
+    active: number;
+    former: number;
+    roles: Record<string, number>;
+    elapsedMs: number;
+    timestamp: string;
+    authEmail: string;
+  } | null>(null);
+
+  const fetchData = async (isManual = false) => {
+    const startTime = performance.now();
+    if (isManual) {
+      setIsRefreshing(true);
+    } else {
       setLoading(true);
+    }
+    setFetchError(null);
+
+    const loggedEmail = auth.currentUser?.email || currentUserEmail || 'anônimo';
+    const loggedUid = auth.currentUser?.uid || currentUserUid || 'sem-uid';
+
+    console.groupCollapsed(`🔍 [Dashboard Debug] Consulta à coleção 'responses' (${new Date().toLocaleTimeString()})`);
+    console.info('📡 Contexto de Autenticação:', {
+      authEmail: loggedEmail,
+      authUid: loggedUid,
+      isAdmin,
+      isSuperAdmin,
+      isRH
+    });
+    console.info("⚡ Executando Firestore query: getDocs(collection(db, 'responses'))...");
+
+    try {
       const querySnapshot = await getDocs(collection(db, 'responses'));
-      const docs = querySnapshot.docs.map(docSnap => {
+      const elapsed = Number((performance.now() - startTime).toFixed(1));
+      
+      console.info(`⏱️ Tempo de resposta da consulta: ${elapsed}ms`);
+      console.info(`📊 Quantidade total bruta retornada pelo Firestore: ${querySnapshot.size} documentos`);
+
+      const docs: any[] = [];
+      const roleTally: Record<string, number> = {};
+      let activeCount = 0;
+      let formerCount = 0;
+
+      querySnapshot.docs.forEach((docSnap, index) => {
         const item: any = { id: docSnap.id, ...docSnap.data() };
+        
         const memberName = (item.name || '').toLowerCase();
         if (memberName.includes('pedro leonardo')) {
           if (item.lastEditedAt || item.lastEditedBy) {
@@ -116,8 +160,36 @@ export default function Dashboard({
           delete item.lastEditedAt;
           delete item.lastEditedBy;
         }
-        return item;
+
+        if (item.status === 'Ex-membro') {
+          formerCount++;
+        } else {
+          activeCount++;
+        }
+
+        if (item.leagueRole) {
+          String(item.leagueRole).split(',').forEach(r => {
+            const tr = r.trim();
+            if (tr) roleTally[tr] = (roleTally[tr] || 0) + 1;
+          });
+        }
+
+        docs.push(item);
+        console.log(`  [Doc #${index + 1}] ID: ${item.id} | Nome: "${item.name || '(Sem nome)'}" | E-mail: "${item.email}" | Área: "${item.leagueRole}" | Status: "${item.status}"`);
       });
+
+      console.info('📋 Diagnóstico Geral dos Membros:', {
+        totalDocumentos: docs.length,
+        membrosAtivos: activeCount,
+        exMembros: formerCount,
+        distribuicaoRoles: roleTally
+      });
+
+      if (docs.length === 0) {
+        console.warn('⚠️ AVISO: Nenhum membro retornado pela consulta! Causas comuns: 1) Regras do Firestore bloqueando leitura para este usuário; 2) Coleção "responses" vazia.');
+      } else if (docs.length < 10) {
+        console.warn(`⚠️ AVISO: A consulta retornou apenas ${docs.length} membro(s). Se você esperava 35 membros, verifique se seu e-mail (${loggedEmail}) tem permissão de administrador nas regras de segurança do Firestore para listar todos os documentos.`);
+      }
 
       // Silently scrub any audit log referring to Pedro Leonardo from the audit_logs collection
       try {
@@ -127,7 +199,7 @@ export default function Dashboard({
           const targetName = (logData.targetMemberName || '').toLowerCase();
           const details = (logData.details || '').toLowerCase();
           const targetEmail = (logData.targetMemberEmail || '').toLowerCase();
-          if (targetName.includes('pedro leonardo') || details.includes('pedro leonardo') || targetEmail.includes('pedro') && details.includes('editad')) {
+          if (targetName.includes('pedro leonardo') || details.includes('pedro leonardo') || (targetEmail.includes('pedro') && details.includes('editad'))) {
             deleteDoc(doc(db, 'audit_logs', logDoc.id)).catch(() => {});
           }
         });
@@ -136,10 +208,32 @@ export default function Dashboard({
       }
 
       setData(docs);
-    } catch (error) {
+      setDebugStats({
+        total: docs.length,
+        active: activeCount,
+        former: formerCount,
+        roles: roleTally,
+        elapsedMs: elapsed,
+        timestamp: new Date().toLocaleTimeString(),
+        authEmail: loggedEmail
+      });
+
+      if (isManual) {
+        toast.success(`Sincronizado: ${docs.length} membros carregados do Firestore!`);
+      }
+    } catch (error: any) {
+      console.error('❌ ERRO na consulta getDocs(responses):', error);
+      console.error('Código do erro Firestore:', error?.code);
+      console.error('Mensagem de erro:', error?.message);
+      if (error?.code === 'permission-denied') {
+        console.error('🚨 PERMISSION DENIED: O usuário atual não possui permissão de leitura global na coleção "responses". Verifique firestore.rules para o e-mail ' + loggedEmail);
+      }
+      setFetchError(error?.message || 'Erro ao carregar dados do Firestore');
       handleFirestoreError(error, OperationType.LIST, 'responses');
     } finally {
       setLoading(false);
+      setIsRefreshing(false);
+      console.groupEnd();
     }
   };
 
@@ -309,7 +403,16 @@ export default function Dashboard({
       if (!member.leagueRole) return false;
       const memberRoles = String(member.leagueRole).toLowerCase().split(',').map((r: string) => r.trim());
       const targetRole = roleFilter.toLowerCase().trim();
-      const matchesRole = memberRoles.some((r: string) => r.includes(targetRole) || targetRole.includes(r));
+      let matchesRole = memberRoles.some((r: string) => r.includes(targetRole) || targetRole.includes(r));
+      if (targetRole === 'rh' || targetRole.includes('diret')) {
+        matchesRole = memberRoles.some((r: string) => 
+          r.includes('rh') || 
+          r.includes('recursos humanos') || 
+          r.includes('diret') || 
+          r.includes('diretoria') || 
+          r.includes('diretório')
+        );
+      }
       if (!matchesRole) return false;
     }
 
@@ -601,9 +704,50 @@ export default function Dashboard({
 
   if (loading) {
     return (
-      <div className="flex flex-col items-center justify-center h-64 text-emerald-500">
-        <Loader2 className="animate-spin mb-4" size={32} />
-        <p className="text-sm font-medium text-gray-400">Carregando métricas...</p>
+      <div className="flex flex-col items-center justify-center min-h-[380px] p-8 text-emerald-500 bg-[rgba(255,255,255,0.02)] border border-[var(--color-ink-faint)] space-y-4">
+        <div className="relative">
+          <div className="w-16 h-16 rounded-full border-2 border-emerald-500/20 border-t-emerald-400 animate-spin flex items-center justify-center"></div>
+          <Database size={22} className="absolute inset-0 m-auto text-emerald-400 animate-pulse" />
+        </div>
+        <div className="text-center space-y-1.5">
+          <h4 className="text-base font-['Syne'] font-bold text-white uppercase tracking-wider">
+            Carregando Membros da LAJE...
+          </h4>
+          <p className="text-xs font-['Space_Mono'] text-gray-400 max-w-md mx-auto">
+            Consultando a coleção <code className="text-emerald-400 font-bold bg-emerald-950/60 px-1.5 py-0.5 border border-emerald-500/30">responses</code> no Firestore e processando privilégios de administrador...
+          </p>
+        </div>
+        <div className="flex items-center gap-3 pt-2 text-[11px] font-['Space_Mono'] text-gray-500">
+          <span className="flex items-center gap-1.5">
+            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping"></span>
+            Autenticado: {auth.currentUser?.email || currentUserEmail || 'Usuário'}
+          </span>
+          <span>•</span>
+          <span>Sincronizando banco de dados</span>
+        </div>
+      </div>
+    );
+  }
+
+  if (fetchError && data.length === 0) {
+    return (
+      <div className="p-6 bg-red-950/30 border border-red-500/50 text-red-200 space-y-4 max-w-2xl mx-auto my-8">
+        <div className="flex items-center gap-3">
+          <AlertTriangle className="text-red-400 shrink-0" size={24} />
+          <div>
+            <h4 className="font-['Syne'] font-bold text-red-400 uppercase">Falha ao Consultar Firestore</h4>
+            <p className="text-xs font-['Space_Mono'] text-red-300/80">{fetchError}</p>
+          </div>
+        </div>
+        <p className="text-xs text-gray-300">
+          Possíveis causas: O usuário autenticado não possui privilégios de administrador nas regras de segurança do Firestore (permissão de leitura global em <code>/responses</code>), ou houve um problema de conexão.
+        </p>
+        <button
+          onClick={() => fetchData(true)}
+          className="px-4 py-2 bg-red-500 hover:bg-red-400 text-gray-950 font-bold text-xs font-['Space_Mono'] uppercase tracking-wider flex items-center gap-2 cursor-pointer transition-colors"
+        >
+          <RefreshCw size={14} /> Tentar Novamente
+        </button>
       </div>
     );
   }
@@ -1348,12 +1492,39 @@ export default function Dashboard({
           </div>
 
           {/* Small Alert Icon / Status in Dashboard Header & Add Member Button */}
-          <div className="relative flex flex-wrap items-center gap-3 shrink-0 self-start sm:self-auto">
+          <div className="relative flex flex-wrap items-center gap-2.5 shrink-0 self-start sm:self-auto">
+            {/* Botão Sincronizar com Firestore */}
+            <button
+              type="button"
+              onClick={() => fetchData(true)}
+              disabled={isRefreshing || loading}
+              className="flex items-center gap-1.5 px-3 py-2 bg-gray-900/90 hover:bg-gray-800 border border-gray-700 hover:border-gray-500 text-gray-300 hover:text-white font-['Space_Mono'] text-xs uppercase tracking-wider transition-colors cursor-pointer disabled:opacity-50"
+              title="Recarregar membros do Firestore em tempo real e emitir log no console"
+            >
+              <RefreshCw size={13} className={isRefreshing ? 'animate-spin text-emerald-400' : 'text-gray-400'} />
+              <span>{isRefreshing ? 'Buscando...' : 'Sincronizar'}</span>
+            </button>
+
+            {/* Botão Diagnóstico Firestore */}
+            <button
+              type="button"
+              onClick={() => setIsDebugOpen(prev => !prev)}
+              className={`flex items-center gap-1.5 px-3 py-2 border font-['Space_Mono'] text-xs transition-colors cursor-pointer ${
+                isDebugOpen
+                  ? 'bg-emerald-500/20 border-emerald-500 text-emerald-300 font-bold'
+                  : 'bg-gray-900/90 border-gray-700 text-gray-400 hover:text-white hover:border-gray-600'
+              }`}
+              title="Ver painel de diagnóstico da consulta Firestore"
+            >
+              <Terminal size={13} />
+              <span>Diagnóstico ({data.length})</span>
+            </button>
+
             {isAuthorizedToAddMember && (
               <button
                 type="button"
                 onClick={() => handleOpenAddMember()}
-                className="flex items-center gap-2 px-3.5 py-2.5 bg-emerald-500 hover:bg-emerald-400 text-gray-950 font-bold text-xs font-['Space_Mono'] uppercase tracking-wider transition-all duration-200 shadow-[0_0_15px_rgba(16,185,129,0.3)] cursor-pointer shrink-0"
+                className="flex items-center gap-2 px-3.5 py-2 bg-emerald-500 hover:bg-emerald-400 text-gray-950 font-bold text-xs font-['Space_Mono'] uppercase tracking-wider transition-all duration-200 shadow-[0_0_15px_rgba(16,185,129,0.3)] cursor-pointer shrink-0"
                 title="Cadastrar novo membro na equipe (Super Admin / Membro do Diretório)"
               >
                 <UserPlus size={15} />
@@ -1466,7 +1637,64 @@ export default function Dashboard({
           </div>
         </div>
 
-        {/* Filter Inputs Grid: Nome, Função Atual, Status de Projeto, Situação */}
+        {/* Painel de Diagnóstico do Firestore */}
+        {isDebugOpen && (
+          <div className="p-4 bg-gray-950/95 border border-emerald-500/40 space-y-3 font-['Space_Mono'] text-xs text-gray-300">
+            <div className="flex items-center justify-between border-b border-gray-800 pb-2">
+              <div className="flex items-center gap-2 text-emerald-400 font-bold">
+                <Database size={15} />
+                <span>DIAGNÓSTICO DA CONSULTA FIRESTORE</span>
+              </div>
+              <button
+                onClick={() => setIsDebugOpen(false)}
+                className="text-gray-400 hover:text-white p-1 cursor-pointer"
+              >
+                <X size={14} />
+              </button>
+            </div>
+
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-[11px]">
+              <div className="p-2.5 bg-gray-900/60 border border-gray-800">
+                <span className="text-gray-500 block">Total no Firestore</span>
+                <span className="text-base font-bold text-emerald-400">{data.length} membros</span>
+              </div>
+              <div className="p-2.5 bg-gray-900/60 border border-gray-800">
+                <span className="text-gray-500 block">Membros Ativos</span>
+                <span className="text-base font-bold text-white">{data.filter(m => m.status !== 'Ex-membro').length}</span>
+              </div>
+              <div className="p-2.5 bg-gray-900/60 border border-gray-800">
+                <span className="text-gray-500 block">Ex-membros</span>
+                <span className="text-base font-bold text-red-400">{data.filter(m => m.status === 'Ex-membro').length}</span>
+              </div>
+              <div className="p-2.5 bg-gray-900/60 border border-gray-800">
+                <span className="text-gray-500 block">Última Consulta</span>
+                <span className="text-xs font-bold text-amber-300">{debugStats?.timestamp || 'Inicial'} ({debugStats?.elapsedMs ?? 0}ms)</span>
+              </div>
+            </div>
+
+            <div className="text-[11px] space-y-1 bg-black/40 p-2.5 border border-gray-800/80">
+              <p><strong className="text-gray-400">Usuário Autenticado:</strong> <code className="text-emerald-300">{auth.currentUser?.email || currentUserEmail}</code></p>
+              <p><strong className="text-gray-400">Coleção Consultada:</strong> <code className="text-emerald-300">/responses</code></p>
+              <p><strong className="text-gray-400">Permissão de Leitura Global:</strong> <span className={isAdmin ? 'text-emerald-400 font-bold' : 'text-amber-400'}>{isAdmin ? '✓ Administrador Autorizado (Regras Permitem Leitura Global)' : '⚠️ Usuário Comum'}</span></p>
+            </div>
+
+            <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+              <span className="text-[10px] text-gray-500">
+                Abra o Console do Desenvolvedor (F12) para ver o log estruturado completo com cada membro retornado.
+              </span>
+              <button
+                type="button"
+                onClick={() => {
+                  console.table(data.map(m => ({ id: m.id, nome: m.name, email: m.email, area: m.leagueRole, status: m.status })));
+                  toast.success('Tabela de membros emitida no console!');
+                }}
+                className="px-2.5 py-1 bg-gray-800 hover:bg-gray-700 text-gray-200 text-[10px] font-bold border border-gray-700 cursor-pointer"
+              >
+                Imprimir console.table
+              </button>
+            </div>
+          </div>
+        )}
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
           {/* 1. Nome ou E-mail */}
           <div className="relative">
@@ -1526,7 +1754,7 @@ export default function Dashboard({
               <option value="all" className="bg-gray-900 text-white">Todas as Funções ({data.length})</option>
               {distinctRoles.map(role => (
                 <option key={role} value={role} className="bg-gray-900 text-white">
-                  {role} ({countByRole(role)})
+                  {role.toLowerCase() === 'rh' ? '👔 Diretório / RH' : role} ({countByRole(role)})
                 </option>
               ))}
             </select>
@@ -1683,6 +1911,17 @@ export default function Dashboard({
             }`}
           >
             🎵 Som / Áudio
+          </button>
+          <button
+            type="button"
+            onClick={() => setRoleFilter(roleFilter.toLowerCase().includes('rh') || roleFilter.toLowerCase().includes('diret') ? 'all' : 'RH')}
+            className={`px-2.5 py-1 border transition-colors cursor-pointer text-[11px] ${
+              roleFilter.toLowerCase().includes('rh') || roleFilter.toLowerCase().includes('diret')
+                ? 'bg-amber-500/20 border-amber-500 text-amber-300 font-bold'
+                : 'bg-gray-900/60 border-gray-700 text-gray-400 hover:text-white hover:border-gray-600'
+            }`}
+          >
+            👔 Diretório / RH ({data.filter(m => String(m.leagueRole || '').toLowerCase().includes('rh') || String(m.leagueRole || '').toLowerCase().includes('diret')).length})
           </button>
           <button
             type="button"
