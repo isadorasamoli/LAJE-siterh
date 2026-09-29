@@ -15,7 +15,8 @@ service cloud.firestore {
         (request.auth.token.email != null && (
           request.auth.token.email.lower() == 'isadora.mlima@ufpe.br' || 
           request.auth.token.email.lower() == 'isadora.mlima@ufpe' ||
-          request.auth.token.email.lower().matches('^isadora\\.mlima@ufpe.*')
+          request.auth.token.email.lower().matches('^isadora\\.mlima@ufpe.*') ||
+          request.auth.token.email.lower() == 'isadorasdml@gmail.com'
         )) || 
         (request.auth.token.email != null && (exists(/databases/$(database)/documents/admins/$(request.auth.token.email)) || exists(/databases/$(database)/documents/admins/$(request.auth.token.email.lower()))))
       );
@@ -27,7 +28,8 @@ service cloud.firestore {
         (request.auth.token.email != null && (
           request.auth.token.email.lower() == 'isadora.mlima@ufpe.br' || 
           request.auth.token.email.lower() == 'isadora.mlima@ufpe' ||
-          request.auth.token.email.lower().matches('^isadora\\.mlima@ufpe.*')
+          request.auth.token.email.lower().matches('^isadora\\.mlima@ufpe.*') ||
+          request.auth.token.email.lower() == 'isadorasdml@gmail.com'
         )) ||
         (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && (
           get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isRH == true ||

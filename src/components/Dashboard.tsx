@@ -3,7 +3,7 @@ import { collection, getDocs, doc, updateDoc, deleteDoc, deleteField, setDoc } f
 import { db } from '../lib/firebase';
 import { handleFirestoreError, OperationType } from '../lib/utils';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell, LabelList } from 'recharts';
-import { Loader2, Users, Target, Activity, X, Search, Download, FileText, Trash2, Edit2, Cake, Gift, Calendar as CalendarIcon, PartyPopper, Sparkles, ChevronLeft, ChevronRight, Mail, Copy, Bell, BellRing, Check, History, Gamepad2, Briefcase, Kanban, Filter, RotateCcw, SlidersHorizontal, CheckCircle2, UserPlus } from 'lucide-react';
+import { Loader2, Users, Target, Activity, X, Search, Download, FileText, Trash2, Edit2, Cake, Gift, Calendar as CalendarIcon, PartyPopper, Sparkles, ChevronLeft, ChevronRight, Mail, Copy, Bell, BellRing, Check, History, Gamepad2, Briefcase, Kanban, Filter, RotateCcw, SlidersHorizontal, CheckCircle2, UserPlus, AlertTriangle } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
@@ -41,7 +41,7 @@ export default function Dashboard({
 
   const isSuperAdmin = propIsSuperAdmin !== undefined 
     ? propIsSuperAdmin 
-    : (currentUserEmail.toLowerCase().trim() === 'isadora.mlima@ufpe.br' || currentUserEmail.toLowerCase().trim().startsWith('isadora.mlima@ufpe'));
+    : (currentUserEmail.toLowerCase().trim() === 'isadora.mlima@ufpe.br' || currentUserEmail.toLowerCase().trim().startsWith('isadora.mlima@ufpe') || currentUserEmail.toLowerCase().trim() === 'isadorasdml@gmail.com');
 
   const isRH = propIsRH !== undefined 
     ? propIsRH 
@@ -147,6 +147,89 @@ export default function Dashboard({
     if (!isAdmin) return;
     fetchData();
   }, [isAdmin]);
+
+  // Detecção de múltiplos cadastros com o mesmo e-mail
+  const [isMergingDuplicates, setIsMergingDuplicates] = useState(false);
+  const [isConfirmingMerge, setIsConfirmingMerge] = useState(false);
+  const duplicateGroups = React.useMemo(() => {
+    const map = new Map<string, any[]>();
+    data.forEach(m => {
+      const email = (m.email || '').toLowerCase().trim();
+      if (!email) return;
+      if (!map.has(email)) map.set(email, []);
+      map.get(email)!.push(m);
+    });
+    const groups: { email: string; members: any[] }[] = [];
+    map.forEach((members, email) => {
+      if (members.length > 1) {
+        groups.push({ email, members });
+      }
+    });
+    return groups;
+  }, [data]);
+
+  const handleMergeDuplicates = async () => {
+    if (duplicateGroups.length === 0) return;
+
+    setIsMergingDuplicates(true);
+    try {
+      let mergedCount = 0;
+      for (const group of duplicateGroups) {
+        // Ordenar os membros: priorizar quem tem userId real (que não começa com usr_) e quem foi editado mais recentemente
+        const sorted = [...group.members].sort((a, b) => {
+          const aHasRealUid = a.userId && !String(a.userId).startsWith('usr_') ? 1 : 0;
+          const bHasRealUid = b.userId && !String(b.userId).startsWith('usr_') ? 1 : 0;
+          if (aHasRealUid !== bHasRealUid) return bHasRealUid - aHasRealUid;
+          return (b.lastEditedAt || b.createdAt || 0) - (a.lastEditedAt || a.createdAt || 0);
+        });
+
+        const primary = sorted[0];
+        const duplicatesToDelete = sorted.slice(1);
+
+        // Mesclar dados úteis dos duplicados no primário caso o primário esteja sem algum dado
+        const updates: any = {};
+        for (const dup of duplicatesToDelete) {
+          if (!primary.birthday && dup.birthday) updates.birthday = dup.birthday;
+          if (!primary.discordUser && dup.discordUser) updates.discordUser = dup.discordUser;
+          if (!primary.currentProjects && dup.currentProjects) updates.currentProjects = dup.currentProjects;
+          if (!primary.weeklyHours && dup.weeklyHours) updates.weeklyHours = dup.weeklyHours;
+          if (dup.userId && !String(dup.userId).startsWith('usr_') && (!primary.userId || String(primary.userId).startsWith('usr_'))) {
+            updates.userId = dup.userId;
+          }
+        }
+
+        if (Object.keys(updates).length > 0) {
+          await updateDoc(doc(db, 'responses', primary.id), updates);
+        }
+
+        // Deletar as cópias redundantes
+        for (const dup of duplicatesToDelete) {
+          await deleteDoc(doc(db, 'responses', dup.id));
+        }
+
+        await logAuditAction({
+          action: 'Exclusão de Membro',
+          targetMemberId: primary.id,
+          targetMemberName: primary.name,
+          targetMemberEmail: primary.email,
+          performedByEmail: currentUserEmail,
+          performedByName: currentUserName || 'Diretório',
+          details: `Unificação de duplicatas: ${duplicatesToDelete.length} cópia(s) removida(s) para o e-mail ${primary.email}`
+        });
+
+        mergedCount++;
+      }
+
+      toast.success(`${mergedCount} cadastro(s) duplicado(s) unificado(s) com sucesso!`);
+      setIsConfirmingMerge(false);
+      await fetchData();
+    } catch (err: any) {
+      console.error('Erro ao unificar duplicatas:', err);
+      toast.error(err?.message || 'Erro ao unificar cadastros duplicados.');
+    } finally {
+      setIsMergingDuplicates(false);
+    }
+  };
 
   const distinctRoles: string[] = Array.from(
     new Set<string>(
@@ -2403,6 +2486,60 @@ export default function Dashboard({
             )}
           </div>
         </div>
+
+        {/* Alerta de Cadastros Duplicados */}
+        {duplicateGroups.length > 0 && (
+          <div className="mx-6 mb-4 p-4 bg-amber-500/10 border border-amber-500/40 rounded flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs font-['Space_Mono'] animate-in fade-in">
+            <div className="flex items-start gap-2.5 text-amber-300">
+              <AlertTriangle size={18} className="shrink-0 text-amber-400 mt-0.5" />
+              <div>
+                <span className="font-bold uppercase block text-amber-200">
+                  {duplicateGroups.length} e-mail(s) com cadastro duplicado detectado(s)
+                </span>
+                <span className="text-[11px] text-amber-300/80">
+                  {duplicateGroups.map(g => `${g.email} (${g.members.length} registros)`).join(' • ')}
+                </span>
+              </div>
+            </div>
+            {!isConfirmingMerge ? (
+              <button
+                type="button"
+                onClick={() => setIsConfirmingMerge(true)}
+                disabled={isMergingDuplicates}
+                className="px-4 py-2 bg-amber-500 hover:bg-amber-400 text-gray-950 font-bold uppercase text-[11px] font-['Space_Mono'] transition-all shadow-md self-start sm:self-auto cursor-pointer shrink-0 disabled:opacity-50"
+              >
+                ⚡ Unificar e Limpar Duplicatas
+              </button>
+            ) : (
+              <div className="flex items-center gap-2 self-start sm:self-auto shrink-0">
+                <button
+                  type="button"
+                  onClick={handleMergeDuplicates}
+                  disabled={isMergingDuplicates}
+                  className="px-3.5 py-2 bg-red-600 hover:bg-red-500 text-white font-bold uppercase text-[11px] font-['Space_Mono'] transition-all shadow-md cursor-pointer disabled:opacity-50 flex items-center gap-1.5"
+                >
+                  {isMergingDuplicates ? (
+                    <>
+                      <Loader2 size={13} className="animate-spin" />
+                      Unificando...
+                    </>
+                  ) : (
+                    '⚠️ Confirmar Limpeza'
+                  )}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setIsConfirmingMerge(false)}
+                  disabled={isMergingDuplicates}
+                  className="px-3 py-2 bg-gray-800 hover:bg-gray-700 text-gray-300 font-bold uppercase text-[11px] font-['Space_Mono'] transition-all cursor-pointer"
+                >
+                  Cancelar
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+
         <div className="w-full overflow-x-auto pb-4 scrollbar-thin scrollbar-thumb-gray-700 scrollbar-track-transparent">
           <table className="w-full text-left text-xs text-gray-300">
             <thead className="text-xs text-gray-400 uppercase bg-gray-950 border-b border-[var(--color-ink-faint)]">

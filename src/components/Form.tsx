@@ -34,7 +34,9 @@ export default function Form({ user, token }: FormProps) {
   const [selectedMemberId, setSelectedMemberId] = useState<string>('me');
   const [fetchingExisting, setFetchingExisting] = useState(true);
 
-  const isSuperAdmin = user?.email?.toLowerCase().trim() === 'isadora.mlima@ufpe.br' || (user?.email?.toLowerCase().trim().startsWith('isadora.mlima@ufpe') ?? false);
+  const isSuperAdmin = user?.email?.toLowerCase().trim() === 'isadora.mlima@ufpe.br' || 
+    (user?.email?.toLowerCase().trim().startsWith('isadora.mlima@ufpe') ?? false) ||
+    user?.email?.toLowerCase().trim() === 'isadorasdml@gmail.com';
 
   const [formData, setFormData] = useState({
     name: user?.displayName || '',
@@ -141,14 +143,28 @@ export default function Form({ user, token }: FormProps) {
     const fetchExisting = async () => {
       if (!user) return;
       try {
-        const q = query(collection(db, 'responses'), where('userId', '==', user.uid));
-        const snap = await getDocs(q);
-        if (!snap.empty) {
-          const data = snap.docs[0].data();
-          const selfDoc = { id: snap.docs[0].id, ...data };
-          setExistingResponse(selfDoc);
-          setSelfResponse(selfDoc);
-          loadFormData(data);
+        let foundDoc: any = null;
+        // 1. Tentar buscar pelo UID autenticado do usuário
+        const qUserId = query(collection(db, 'responses'), where('userId', '==', user.uid));
+        const snapUserId = await getDocs(qUserId);
+        if (!snapUserId.empty) {
+          foundDoc = { id: snapUserId.docs[0].id, ...snapUserId.docs[0].data() };
+        } else if (user.email) {
+          // 2. Fallback essencial por e-mail: caso o membro tenha sido cadastrado via Dashboard ou lista
+          const cleanEmail = user.email.toLowerCase().trim();
+          const qEmail = query(collection(db, 'responses'), where('email', '==', cleanEmail));
+          const snapEmail = await getDocs(qEmail);
+          if (!snapEmail.empty) {
+            foundDoc = { id: snapEmail.docs[0].id, ...snapEmail.docs[0].data() };
+            // Vincular de forma permanente o UID do Google autenticado a essa resposta
+            await updateDoc(doc(db, 'responses', foundDoc.id), { userId: user.uid }).catch(() => {});
+          }
+        }
+
+        if (foundDoc) {
+          setExistingResponse(foundDoc);
+          setSelfResponse(foundDoc);
+          loadFormData(foundDoc);
         }
 
         if (isSuperAdmin) {
@@ -243,9 +259,60 @@ export default function Form({ user, token }: FormProps) {
     setLoading(true);
     setErrorMsg('');
     try {
+      const targetEmail = (selectedMemberId === 'me' ? user.email : (existingResponse?.email || user.email) || '').toLowerCase().trim();
+      if (!targetEmail) {
+        toast.error('E-mail do usuário não identificado');
+        setLoading(false);
+        return;
+      }
+
+      // 1. Verificar se o e-mail do usuário já existe na coleção 'responses' antes de permitir a submissão
+      let targetDoc = existingResponse;
+      if (!targetDoc && selectedMemberId === 'me') {
+        const emailCheckQ = query(collection(db, 'responses'), where('email', '==', targetEmail));
+        const emailCheckSnap = await getDocs(emailCheckQ);
+        if (!emailCheckSnap.empty) {
+          const found: any = { id: emailCheckSnap.docs[0].id, ...emailCheckSnap.docs[0].data() };
+          if (!isSuperAdmin && !found.editAuthorized) {
+            setExistingResponse(found);
+            loadFormData(found);
+            toast.error('Este e-mail já possui um formulário respondido no sistema!');
+            setErrorMsg('Já existe um registro cadastrado para este e-mail na coleção responses. Não são permitidos múltiplos registros.');
+            setLoading(false);
+            return;
+          }
+          targetDoc = found;
+        } else {
+          // Checar também pelo UID do usuário
+          const uidCheckQ = query(collection(db, 'responses'), where('userId', '==', user.uid));
+          const uidCheckSnap = await getDocs(uidCheckQ);
+          if (!uidCheckSnap.empty) {
+            targetDoc = { id: uidCheckSnap.docs[0].id, ...uidCheckSnap.docs[0].data() };
+          }
+        }
+      } else if (existingResponse && !isSuperAdmin && !existingResponse.editAuthorized) {
+        toast.error('Edição não autorizada. Solicite permissão ao Diretório.');
+        setLoading(false);
+        return;
+      }
+
+      // Se ainda não tiver targetDoc (ou seja, novo cadastro), fazer a verificação final de duplicação por e-mail
+      if (!targetDoc) {
+        const finalDuplicateCheck = await getDocs(query(collection(db, 'responses'), where('email', '==', targetEmail)));
+        if (!finalDuplicateCheck.empty) {
+          const existingData: any = { id: finalDuplicateCheck.docs[0].id, ...finalDuplicateCheck.docs[0].data() };
+          setExistingResponse(existingData);
+          loadFormData(existingData);
+          toast.error('Este e-mail já possui um formulário cadastrado no sistema!');
+          setErrorMsg('Já existe um registro com este e-mail na coleção responses. Múltiplos registros foram impedidos.');
+          setLoading(false);
+          return;
+        }
+      }
+
       const responseData = {
         userId: user.uid,
-        email: user.email || '',
+        email: targetEmail,
         name: formData.name,
         birthday: formData.birthday || '',
         discordUser: formData.discordUser || '',
@@ -269,46 +336,46 @@ export default function Form({ user, token }: FormProps) {
         status: 'Ativo' // ensure it remains active
       };
 
-      if (existingResponse) {
+      if (targetDoc) {
         const updatePayload = {
           ...responseData,
-          userId: existingResponse.userId || user.uid,
-          email: existingResponse.email || user.email || '',
+          userId: user.uid,
+          email: user.email || targetDoc.email || '',
           lastEditedAt: Date.now(),
           lastEditedBy: user.email || 'isadora.mlima@ufpe.br',
           editAuthorized: isSuperAdmin ? true : false,
           editRequestStatus: null
         };
 
-        await updateDoc(doc(db, 'responses', existingResponse.id), updatePayload);
+        await updateDoc(doc(db, 'responses', targetDoc.id), updatePayload);
 
         // Record audit log for data update
         const changedFields: string[] = [];
-        if (existingResponse.name !== responseData.name) changedFields.push(`Nome`);
-        if (existingResponse.birthday !== responseData.birthday) changedFields.push(`Aniversário`);
-        if (existingResponse.course !== responseData.course) changedFields.push(`Curso`);
-        if (existingResponse.period !== responseData.period) changedFields.push(`Período`);
-        if (existingResponse.leagueRole !== responseData.leagueRole) changedFields.push(`Área`);
-        if (existingResponse.weeklyHours !== responseData.weeklyHours) changedFields.push(`Horas`);
-        if (existingResponse.currentProjects !== responseData.currentProjects) changedFields.push(`Projetos`);
+        if (targetDoc.name !== responseData.name) changedFields.push(`Nome`);
+        if (targetDoc.birthday !== responseData.birthday) changedFields.push(`Aniversário`);
+        if (targetDoc.course !== responseData.course) changedFields.push(`Curso`);
+        if (targetDoc.period !== responseData.period) changedFields.push(`Período`);
+        if (targetDoc.leagueRole !== responseData.leagueRole) changedFields.push(`Área`);
+        if (targetDoc.weeklyHours !== responseData.weeklyHours) changedFields.push(`Horas`);
+        if (targetDoc.currentProjects !== responseData.currentProjects) changedFields.push(`Projetos`);
 
         await logAuditAction({
           action: 'Atualização de Dados',
-          targetMemberId: existingResponse.id,
+          targetMemberId: targetDoc.id,
           targetMemberName: responseData.name,
-          targetMemberEmail: existingResponse.email || responseData.email,
+          targetMemberEmail: targetDoc.email || responseData.email,
           details: isSuperAdmin && selectedMemberId !== 'me'
             ? `Respostas de ${responseData.name} foram editadas no formulário por isadora.mlima@ufpe`
             : changedFields.length > 0 
             ? `Membro atualizou dados cadastrais (${changedFields.join(', ')})`
             : `Membro atualizou dados do formulário`,
           previousValue: JSON.stringify({
-            name: existingResponse.name,
-            course: existingResponse.course,
-            period: existingResponse.period,
-            leagueRole: existingResponse.leagueRole,
-            weeklyHours: existingResponse.weeklyHours,
-            currentProjects: existingResponse.currentProjects,
+            name: targetDoc.name,
+            course: targetDoc.course,
+            period: targetDoc.period,
+            leagueRole: targetDoc.leagueRole,
+            weeklyHours: targetDoc.weeklyHours,
+            currentProjects: targetDoc.currentProjects,
           }),
           newValue: JSON.stringify({
             name: responseData.name,
@@ -323,14 +390,15 @@ export default function Form({ user, token }: FormProps) {
         });
 
         toast.success(`Formulário de ${responseData.name || 'membro'} atualizado com sucesso!`);
-        const updatedDoc = { ...existingResponse, ...updatePayload };
+        const updatedDoc = { ...targetDoc, ...updatePayload };
         setExistingResponse(updatedDoc);
         if (selectedMemberId === 'me') {
           setSelfResponse(updatedDoc);
         }
-        setAllResponses(prev => prev.map(m => m.id === existingResponse.id ? updatedDoc : m));
+        setAllResponses(prev => prev.map(m => m.id === targetDoc.id ? updatedDoc : m));
       } else {
-        const newResponseId = crypto.randomUUID();
+        // Usar o próprio UID do usuário autenticado como ID do documento para garantir idempotência absoluta
+        const newResponseId = user.uid;
         await setDoc(doc(db, 'responses', newResponseId), {
           ...responseData,
           createdAt: Date.now()

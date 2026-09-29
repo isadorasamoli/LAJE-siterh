@@ -82,7 +82,7 @@ export default function App() {
       try {
         let adminStatus = false;
         const userEmail = currentUser.email?.toLowerCase().trim() || '';
-        const isSuperAdminEmail = userEmail === 'isadora.mlima@ufpe.br' || userEmail === 'isadora.mlima@ufpe' || userEmail.startsWith('isadora.mlima@ufpe');
+        const isSuperAdminEmail = userEmail === 'isadora.mlima@ufpe.br' || userEmail === 'isadora.mlima@ufpe' || userEmail.startsWith('isadora.mlima@ufpe') || userEmail === 'isadorasdml@gmail.com';
         if (isSuperAdminEmail) {
           adminStatus = true;
         } else {

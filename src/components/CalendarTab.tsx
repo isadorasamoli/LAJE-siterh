@@ -3,7 +3,7 @@ import { collection, getDocs, addDoc, updateDoc, deleteDoc, doc, query, orderBy 
 import { db } from '../lib/firebase';
 import { handleFirestoreError, OperationType } from '../lib/utils';
 import { getAuth } from 'firebase/auth';
-import { ChevronLeft, ChevronRight, Plus, Loader2, X, Calendar as CalendarIcon, Clock, Trash2, Edit2, Search } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Plus, Loader2, X, Calendar as CalendarIcon, Clock, Trash2, Edit2, Search, Mail } from 'lucide-react';
 import { 
   format, addMonths, subMonths, startOfMonth, endOfMonth, 
   startOfWeek, endOfWeek, eachDayOfInterval, isSameMonth, 
@@ -35,7 +35,6 @@ export default function CalendarTab({ isAdmin, isRH = false, token }: CalendarPr
   const [events, setEvents] = useState<any[]>([]);
   const [memberBirthdays, setMemberBirthdays] = useState<MemberBirthday[]>([]);
   const [loading, setLoading] = useState(true);
-  const [emailModalData, setEmailModalData] = useState<EmailPayload | null>(null);
   
   const [selectedBirthday, setSelectedBirthday] = useState<{
     name: string;
@@ -140,11 +139,9 @@ export default function CalendarTab({ isAdmin, isRH = false, token }: CalendarPr
         .map(response => response.data().email)
         .filter((email): email is string => Boolean(email));
 
-      const payload = buildEventEmail(eventData, type, emails);
-      // Abre aba no navegador para envio manual e prepara fallback
-      openManualEmailInBrowser(payload);
-      setEmailModalData(payload);
-      toast.success('Aba do navegador aberta para envio do e-mail de evento!');
+      if (token && emails.length > 0) {
+        await sendEventNotification(token, emails, eventData, type);
+      }
     } catch (e) {
       console.info('Notificação por e-mail de evento não pôde ser enviada:', e);
     }
@@ -665,12 +662,6 @@ export default function CalendarTab({ isAdmin, isRH = false, token }: CalendarPr
           </div>
         </div>
       )}
-
-      {/* MODAL DE ENVIO MANUAL DE E-MAIL EM NOVA ABA */}
-      <ManualEmailModal
-        email={emailModalData}
-        onClose={() => setEmailModalData(null)}
-      />
     </div>
   );
 }
