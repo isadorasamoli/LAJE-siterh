@@ -3,7 +3,7 @@ import { collection, getDocs, addDoc, updateDoc, deleteDoc, doc, query, orderBy 
 import { db } from '../lib/firebase';
 import { handleFirestoreError, OperationType } from '../lib/utils';
 import { getAuth } from 'firebase/auth';
-import { ChevronLeft, ChevronRight, Plus, Loader2, X, Calendar as CalendarIcon, Clock, Trash2, Edit2, Search, Mail, ExternalLink } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Plus, Loader2, X, Calendar as CalendarIcon, Clock, Trash2, Edit2, Search } from 'lucide-react';
 import { 
   format, addMonths, subMonths, startOfMonth, endOfMonth, 
   startOfWeek, endOfWeek, eachDayOfInterval, isSameMonth, 
@@ -12,8 +12,6 @@ import {
 import { ptBR } from 'date-fns/locale';
 import { toast } from 'react-hot-toast';
 import { sendEventNotification } from '../lib/workspace';
-import { buildEventEmail, openManualEmailInBrowser, EmailPayload } from '../lib/manualEmail';
-import ManualEmailModal from './ManualEmailModal';
 
 interface CalendarProps {
   isAdmin: boolean;
