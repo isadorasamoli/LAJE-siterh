@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { collection, getDocs, doc, updateDoc, deleteDoc, deleteField, setDoc } from 'firebase/firestore';
 import { db, auth } from '../lib/firebase';
-import { handleFirestoreError, OperationType } from '../lib/utils';
+import { getProjectDeadlines, getProjectDetails, getProjectNames, handleFirestoreError, OperationType } from '../lib/utils';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell, LabelList } from 'recharts';
 import { Loader2, Users, Target, Activity, X, Search, Download, FileText, Trash2, Edit2, Cake, Gift, Calendar as CalendarIcon, PartyPopper, Sparkles, ChevronLeft, ChevronRight, Mail, Copy, Bell, BellRing, Check, History, Gamepad2, Briefcase, Kanban, Filter, RotateCcw, SlidersHorizontal, CheckCircle2, UserPlus, AlertTriangle, RefreshCw, Database, Terminal, Info, ShieldCheck } from 'lucide-react';
 import { toast } from 'react-hot-toast';
@@ -89,6 +89,7 @@ export default function Dashboard({
     learningFocus: '',
     isInProject: 'Sim',
     currentProjects: '',
+    projectDeadlines: {} as Record<string, string>,
     notInProjectStatus: 'Quero entrar em um projeto e estou procurando',
     interestedProjects: '',
     attendancePreference: 'Sim, sem problema',
@@ -1227,6 +1228,8 @@ export default function Dashboard({
       learningFocus: memberToEdit.learningFocus || '',
       isInProject: memberToEdit.isInProject || (memberToEdit.currentProjects ? 'Sim' : 'Não'),
       currentProjects: memberToEdit.currentProjects || '',
+      projectDetails: getProjectDetails(memberToEdit),
+      projectDeadlines: getProjectDeadlines(memberToEdit),
       notInProjectStatus: memberToEdit.notInProjectStatus || 'Quero entrar em um projeto e estou procurando',
       interestedProjects: memberToEdit.interestedProjects || '',
       attendancePreference: memberToEdit.attendancePreference || 'Sim, sem problema',
@@ -1262,13 +1265,15 @@ export default function Dashboard({
         learningFocus: editingFormData.learningFocus || '',
         isInProject: editingFormData.isInProject || 'Sim',
         currentProjects: editingFormData.currentProjects || '',
+        projectDetails: editingFormData.projectDetails || {},
+        projectDeadlines: editingFormData.projectDeadlines || {},
         notInProjectStatus: editingFormData.notInProjectStatus || '',
         interestedProjects: editingFormData.interestedProjects || '',
         attendancePreference: editingFormData.attendancePreference || 'Sim, sem problema',
         microtasksInterest: editingFormData.microtasksInterest || 'Sim, me avisem quando abrir',
         priority: editingFormData.priority || 'Média',
         progress: Number(editingFormData.progress || 0),
-        deadline: editingFormData.deadline || '',
+        deadline: Object.values(editingFormData.projectDeadlines || {}).find(Boolean) || editingFormData.deadline || '',
         lastEditedAt: Date.now(),
         lastEditedBy: 'isadora.mlima@ufpe.br',
       };
@@ -3032,7 +3037,23 @@ export default function Dashboard({
                     {selectedMember.weeklyHours && (
                       <p><span className="text-gray-400 block text-xs font-semibold uppercase mb-1">Dedicação Semanal</span> <span className="text-emerald-400 font-semibold">{selectedMember.weeklyHours}</span></p>
                     )}
-                    <p><span className="text-gray-400 block text-xs font-semibold uppercase mb-1">Projetos Atuais</span> <span className="text-gray-200 font-medium">{selectedMember.currentProjects || 'Nenhum'}</span></p>
+                    <div>
+                      <span className="text-gray-400 block text-xs font-semibold uppercase mb-2">Projetos Atuais</span>
+                      {getProjectNames(selectedMember.currentProjects).length > 0 ? (
+                        <div className="space-y-2">
+                          {getProjectNames(selectedMember.currentProjects).map(project => (
+                            <div key={project} className="p-2 bg-gray-900/60 border border-gray-700">
+                              <p className="text-emerald-400 font-semibold text-xs">{project}</p>
+                              <p className="text-gray-300 text-xs mt-1 whitespace-pre-wrap">
+                                {getProjectDetails(selectedMember)[project] || 'Atividade não informada'}
+                              </p>
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <span className="text-gray-200 font-medium">Nenhum</span>
+                      )}
+                    </div>
                     <p><span className="text-gray-400 block text-xs font-semibold uppercase mb-1">Projetos de Interesse</span> <span className="text-gray-200 font-medium">{selectedMember.interestedProjects || 'Nenhum'}</span></p>
                   </div>
                 </div>
@@ -3054,8 +3075,24 @@ export default function Dashboard({
                     </div>
 
                     <div className="pt-3 border-t border-gray-700">
-                      <span className="text-gray-400 text-xs font-semibold uppercase block mb-1">Deadline Final</span> 
-                      <span className="text-gray-200 font-medium">{selectedMember.deadline ? new Date(selectedMember.deadline).toLocaleDateString('pt-BR', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }) : 'Não definido'}</span>
+                      <span className="text-gray-400 text-xs font-semibold uppercase block mb-2">Prazos por Projeto</span>
+                      {getProjectNames(selectedMember.currentProjects).length > 0 ? (
+                        <div className="space-y-2">
+                          {getProjectNames(selectedMember.currentProjects).map(project => {
+                            const deadline = getProjectDeadlines(selectedMember)[project];
+                            return (
+                              <div key={project} className="flex items-center justify-between gap-3 text-xs">
+                                <span className="text-gray-300 truncate">{project}</span>
+                                <span className="text-emerald-400 font-medium whitespace-nowrap">
+                                  {deadline ? new Date(`${deadline}T12:00:00`).toLocaleDateString('pt-BR') : 'Não definido'}
+                                </span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      ) : (
+                        <span className="text-gray-200 font-medium">Não definido</span>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -3417,14 +3454,24 @@ export default function Dashboard({
                 </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div>
-                    <label className="text-[11px] font-semibold uppercase text-gray-400 block mb-1">Data Limite (Deadline)</label>
-                    <input
-                      type="date"
-                      value={editingFormData.deadline || ''}
-                      onChange={(e) => setEditingFormData({ ...editingFormData, deadline: e.target.value })}
-                      className="w-full bg-gray-900/80 border border-gray-700 focus:border-blue-500 text-white p-2.5 text-xs outline-none [color-scheme:dark]"
-                    />
+                  <div className="space-y-2">
+                    <label className="text-[11px] font-semibold uppercase text-gray-400 block mb-1">Data Limite por Projeto</label>
+                    {getProjectNames(editingFormData.currentProjects).length > 0 ? getProjectNames(editingFormData.currentProjects).map(project => (
+                      <div key={project} className="flex items-center gap-2">
+                        <span className="text-[11px] text-gray-300 flex-1 truncate">{project}</span>
+                        <input
+                          type="date"
+                          value={(editingFormData.projectDeadlines || {})[project] || ''}
+                          onChange={(e) => setEditingFormData({
+                            ...editingFormData,
+                            projectDeadlines: { ...(editingFormData.projectDeadlines || {}), [project]: e.target.value }
+                          })}
+                          className="bg-gray-900/80 border border-gray-700 focus:border-blue-500 text-white p-2.5 text-xs outline-none [color-scheme:dark]"
+                        />
+                      </div>
+                    )) : (
+                      <span className="text-xs text-gray-500">Cadastre um projeto para definir o prazo.</span>
+                    )}
                   </div>
                   <div>
                     <label className="text-[11px] font-semibold uppercase text-gray-400 block mb-1">Prioridade</label>

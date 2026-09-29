@@ -17,6 +17,7 @@ export interface DetailedMemberData {
   learningFocus?: string;
   isInProject?: string;
   currentProjects?: string;
+  projectDetails?: Record<string, string>;
   notInProjectStatus?: string;
   interestedProjects?: string;
   attendancePreference?: string;
@@ -24,6 +25,7 @@ export interface DetailedMemberData {
   priority?: string;
   progress?: number | string;
   deadline?: string;
+  projectDeadlines?: Record<string, string>;
   status?: string;
   deletionReason?: string;
   createdAt?: string;
@@ -182,7 +184,12 @@ export function exportDetailedMemberPDF(member: DetailedMemberData): void {
   tableRows.push(
     { section: true, label: '4. ALOCAÇÃO EM PROJETOS', value: '' },
     { section: false, label: 'Alocado em Projeto?', value: member.isInProject || (member.currentProjects ? 'Sim' : 'Não') },
-    { section: false, label: 'Projetos Atuais em Andamento', value: member.currentProjects || 'Nenhum projeto atual informado' }
+    { section: false, label: 'Projetos Atuais em Andamento', value: member.currentProjects || 'Nenhum projeto atual informado' },
+    ...Object.entries(member.projectDetails || {}).map(([project, details]) => ({
+      section: false,
+      label: `Atuação em ${project}`,
+      value: details || 'Não informado'
+    }))
   );
 
   if (member.notInProjectStatus) {
@@ -199,10 +206,18 @@ export function exportDetailedMemberPDF(member: DetailedMemberData): void {
     value: member.interestedProjects || 'Nenhum projeto de interesse informado'
   });
 
+  const projectDeadlineEntries = Object.entries(member.projectDeadlines || {});
+
   // SEÇÃO 5
   tableRows.push(
     { section: true, label: '5. METAS, PRAZOS E DISPONIBILIDADE', value: '' },
-    { section: false, label: 'Data Limite / Meta (Deadline)', value: formatDate(member.deadline) },
+    ...(projectDeadlineEntries.length > 0
+      ? projectDeadlineEntries.map(([project, deadline]) => ({
+          section: false,
+          label: `Prazo: ${project}`,
+          value: formatDate(deadline)
+        }))
+      : [{ section: false, label: 'Data Limite / Meta (Deadline)', value: formatDate(member.deadline) }]),
     { section: false, label: 'Prioridade Registrada', value: member.priority || 'Média' },
     { section: false, label: 'Disponibilidade para Reuniões', value: member.attendancePreference || 'Sim, sem problema' },
     { section: false, label: 'Interesse em Microtarefas', value: member.microtasksInterest || 'Sim, me avisem quando abrir' }

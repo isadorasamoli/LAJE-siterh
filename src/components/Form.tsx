@@ -2,7 +2,7 @@ import { useState, ChangeEvent, FormEvent, useEffect, useRef } from 'react';
 import { User } from 'firebase/auth';
 import { collection, doc, setDoc, query, where, getDocs, updateDoc } from 'firebase/firestore';
 import { db } from '../lib/firebase';
-import { handleFirestoreError, OperationType } from '../lib/utils';
+import { getProjectDeadlines, getProjectDetails, getProjectNames, handleFirestoreError, OperationType } from '../lib/utils';
 import { logAuditAction } from '../lib/audit';
 import { CheckCircle, Loader2, Send, ChevronDown, Check, FileText } from 'lucide-react';
 import { toast } from 'react-hot-toast';
@@ -52,6 +52,8 @@ export default function Form({ user, token }: FormProps) {
     learningFocus: '',
     isInProject: 'Sim',
     currentProjects: '',
+    projectDetails: {} as Record<string, string>,
+    projectDeadlines: {} as Record<string, string>,
     notInProjectStatus: 'Quero entrar em um projeto e estou procurando',
     interestedProjects: '',
     attendancePreference: 'Sim, sem problema',
@@ -79,6 +81,8 @@ export default function Form({ user, token }: FormProps) {
       learningFocus: data.learningFocus || '',
       isInProject: data.isInProject || (data.currentProjects ? 'Sim' : 'Não'),
       currentProjects: data.currentProjects || '',
+      projectDetails: getProjectDetails(data),
+      projectDeadlines: getProjectDeadlines(data),
       notInProjectStatus: data.notInProjectStatus || 'Quero entrar em um projeto e estou procurando',
       interestedProjects: data.interestedProjects || '',
       attendancePreference: data.attendancePreference || 'Sim, sem problema',
@@ -111,6 +115,8 @@ export default function Form({ user, token }: FormProps) {
           learningFocus: '',
           isInProject: 'Sim',
           currentProjects: '',
+          projectDetails: {},
+          projectDeadlines: {},
           notInProjectStatus: 'Quero entrar em um projeto e estou procurando',
           interestedProjects: '',
           attendancePreference: 'Sim, sem problema',
@@ -326,13 +332,15 @@ export default function Form({ user, token }: FormProps) {
         learningFocus: formData.learningFocus || '',
         isInProject: formData.isInProject || 'Sim',
         currentProjects: formData.currentProjects || '',
+        projectDetails: formData.projectDetails,
+        projectDeadlines: formData.projectDeadlines,
         notInProjectStatus: formData.notInProjectStatus || '',
         interestedProjects: formData.interestedProjects || '',
         attendancePreference: formData.attendancePreference || '',
         microtasksInterest: formData.microtasksInterest || '',
         priority: formData.priority || 'Média',
         progress: Number(formData.progress || 0),
-        deadline: formData.deadline || '',
+        deadline: Object.values(formData.projectDeadlines).find(Boolean) || formData.deadline || '',
         status: 'Ativo' // ensure it remains active
       };
 
@@ -830,7 +838,7 @@ export default function Form({ user, token }: FormProps) {
 
           {formData.isInProject === 'Sim' ? (
             <div className="space-y-1.5 pt-2 border-t border-gray-800">
-              <label className="text-xs font-semibold uppercase text-gray-400">Em qual(is) projeto(s) você está e o que faz?</label>
+              <label className="text-xs font-semibold uppercase text-gray-400">Em qual(is) projeto(s) você está?</label>
               <input
                 required
                 name="currentProjects"
@@ -840,6 +848,41 @@ export default function Form({ user, token }: FormProps) {
                 disabled={isReadOnly}
                 className={`w-full bg-transparent border border-[var(--color-ink-faint)] focus:border-[var(--color-accent)] text-[var(--color-ink)] p-3 outline-none text-xs font-['Space_Mono'] ${isReadOnly ? 'opacity-50' : ''}`}
               />
+              {getProjectNames(formData.currentProjects).length > 0 && (
+                <div className="space-y-2 pt-2">
+                  <p className="text-[11px] font-semibold uppercase text-amber-400 font-['Space_Mono']">O que você faz e qual o prazo em cada projeto</p>
+                  {getProjectNames(formData.currentProjects).map(project => (
+                    <div key={project} className="space-y-2 p-3 bg-black/20 border border-gray-800">
+                      <span className="text-xs text-emerald-400 font-semibold block">{project}</span>
+                      <textarea
+                        rows={2}
+                        value={formData.projectDetails[project] || ''}
+                        onChange={e => setFormData(prev => ({
+                          ...prev,
+                          projectDetails: { ...prev.projectDetails, [project]: e.target.value }
+                        }))}
+                        placeholder={`Descreva o que você faz em ${project}...`}
+                        disabled={isReadOnly}
+                        className={`w-full bg-transparent border border-[var(--color-ink-faint)] focus:border-[var(--color-accent)] text-[var(--color-ink)] p-2 outline-none text-xs resize-none ${isReadOnly ? 'opacity-50' : ''}`}
+                      />
+                      <div className="flex flex-col sm:flex-row sm:items-center gap-2">
+                        <label className="text-[11px] text-gray-400 uppercase font-['Space_Mono'] flex-1">Data limite</label>
+                        <input
+                          type="date"
+                          min={today}
+                          value={formData.projectDeadlines[project] || ''}
+                          onChange={e => setFormData(prev => ({
+                            ...prev,
+                            projectDeadlines: { ...prev.projectDeadlines, [project]: e.target.value }
+                          }))}
+                          disabled={isReadOnly}
+                          className={`bg-transparent border border-[var(--color-ink-faint)] focus:border-[var(--color-accent)] text-[var(--color-ink)] p-2 outline-none text-xs [color-scheme:dark] ${isReadOnly ? 'opacity-50' : ''}`}
+                        />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           ) : (
             <div className="space-y-2 pt-2 border-t border-gray-800">
@@ -900,15 +943,6 @@ export default function Form({ user, token }: FormProps) {
           </div>
         </div>
 
-        {formData.isInProject === 'Sim' && (
-          <div className="pt-2">
-            <div className="space-y-2 max-w-md">
-              <label className="text-xs font-semibold uppercase text-gray-500">Data Limite / Meta</label>
-              <input type="date" min={today} name="deadline" value={formData.deadline} onChange={handleChange} disabled={isReadOnly}
-                className={`w-full bg-transparent border border-[var(--color-ink-faint)] focus:border-[var(--color-accent)] text-[var(--color-ink)] p-2.5 outline-none transition-all cursor-pointer [color-scheme:dark] ${isReadOnly ? 'opacity-50' : ''}`} />
-            </div>
-          </div>
-        )}
       </section>
 
       {errorMsg && (

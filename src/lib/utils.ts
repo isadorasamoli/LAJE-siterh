@@ -6,6 +6,30 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
+export function getProjectNames(currentProjects?: string): string[] {
+  return String(currentProjects || '')
+    .split(',')
+    .map(project => project.trim())
+    .filter(project => project && project.toLowerCase() !== 'nenhum');
+}
+
+export function getProjectDeadlines(member: { currentProjects?: string; deadline?: string; projectDeadlines?: Record<string, string> }): Record<string, string> {
+  const deadlines = member.projectDeadlines && typeof member.projectDeadlines === 'object'
+    ? member.projectDeadlines
+    : {};
+  const projects = getProjectNames(member.currentProjects);
+
+  if (Object.keys(deadlines).length > 0) return deadlines;
+  if (projects.length === 1 && member.deadline) return { [projects[0]]: member.deadline };
+  return {};
+}
+
+export function getProjectDetails(member: { projectDetails?: Record<string, string> }): Record<string, string> {
+  return member.projectDetails && typeof member.projectDetails === 'object'
+    ? member.projectDetails
+    : {};
+}
+
 export enum OperationType {
   CREATE = 'create',
   UPDATE = 'update',
