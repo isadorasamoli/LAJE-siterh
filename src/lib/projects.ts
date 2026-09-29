@@ -16,7 +16,7 @@ import { logAuditAction } from './audit';
 export interface ProjectItem {
   id?: string;
   name: string;
-  status: 'ideia' | 'em análise' | 'aprovado' | 'em produção' | 'pausado' | 'concluído' | 'cancelado';
+  status: 'ideia' | 'em análise' | 'aprovado' | 'em produção' | 'em andamento' | 'pausado' | 'concluído' | 'cancelado' | string;
   engine: string;
   genre: string;
   leader: string;

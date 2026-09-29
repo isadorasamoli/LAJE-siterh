@@ -1,19 +1,54 @@
-import { useEffect, useState, useRef } from 'react';
-import { collection, getDocs, doc, updateDoc, deleteDoc } from 'firebase/firestore';
-import { db } from '../lib/firebase';
+import React, { useEffect, useState, useRef } from 'react';
+import { collection, getDocs, doc, updateDoc, deleteDoc, deleteField, setDoc } from 'firebase/firestore';
+import { db, auth } from '../lib/firebase';
 import { handleFirestoreError, OperationType } from '../lib/utils';
-import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from 'recharts';
-import { Loader2, Users, Target, Activity, X, Search, Download, FileText, Trash2, Edit2, Cake, Gift, Calendar as CalendarIcon, PartyPopper, Sparkles, ChevronLeft, ChevronRight, Mail, Copy, Bell, BellRing, Check, History, Gamepad2, Briefcase, Kanban, Filter, RotateCcw, SlidersHorizontal, CheckCircle2 } from 'lucide-react';
+import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell, LabelList } from 'recharts';
+import { Loader2, Users, Target, Activity, X, Search, Download, FileText, Trash2, Edit2, Cake, Gift, Calendar as CalendarIcon, PartyPopper, Sparkles, ChevronLeft, ChevronRight, Mail, Copy, Bell, BellRing, Check, History, Gamepad2, Briefcase, Kanban, Filter, RotateCcw, SlidersHorizontal, CheckCircle2, UserPlus, AlertTriangle, RefreshCw, Database, Terminal, Info, ShieldCheck } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import { logAuditAction } from '../lib/audit';
+import { exportDetailedMemberPDF } from '../lib/exportDetailedMemberPDF';
+import AdminAccessBlocked from './AdminAccessBlocked';
 
 interface DashboardProps {
+  isAdmin?: boolean;
+  isSuperAdmin?: boolean;
+  isRH?: boolean;
+  currentUserEmail?: string;
+  currentUserName?: string;
+  currentUserUid?: string;
   onNavigateTab?: (tab: 'form' | 'projects' | 'dashboard' | 'calendar' | 'logs' | 'settings') => void;
 }
 
-export default function Dashboard({ onNavigateTab }: DashboardProps = {}) {
+export default function Dashboard({ 
+  isAdmin = false, 
+  isSuperAdmin: propIsSuperAdmin,
+  isRH: propIsRH,
+  currentUserEmail = '',
+  currentUserName = '',
+  currentUserUid = '',
+  onNavigateTab 
+}: DashboardProps) {
+  if (!isAdmin) {
+    return (
+      <AdminAccessBlocked 
+        title="Acesso Restrito: Dashboard"
+        onNavigateHome={() => onNavigateTab ? onNavigateTab('form') : undefined}
+      />
+    );
+  }
+
+  const isSuperAdmin = propIsSuperAdmin !== undefined 
+    ? propIsSuperAdmin 
+    : (currentUserEmail.toLowerCase().trim() === 'isadora.mlima@ufpe.br' || currentUserEmail.toLowerCase().trim().startsWith('isadora.mlima@ufpe') || currentUserEmail.toLowerCase().trim() === 'isadorasdml@gmail.com');
+
+  const isRH = propIsRH !== undefined 
+    ? propIsRH 
+    : true;
+
+  const isAuthorizedToAddMember = isSuperAdmin || isRH || isAdmin;
+
   const [data, setData] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedMember, setSelectedMember] = useState<any | null>(null);
@@ -32,22 +67,263 @@ export default function Dashboard({ onNavigateTab }: DashboardProps = {}) {
   const [deleteConfirmation, setDeleteConfirmation] = useState('');
   const [isDeleting, setIsDeleting] = useState(false);
 
-  const fetchData = async () => {
-    try {
+  const [isEditResponsesOpen, setIsEditResponsesOpen] = useState(false);
+  const [editingFormData, setEditingFormData] = useState<any>({});
+  const [isSavingResponseEdit, setIsSavingResponseEdit] = useState(false);
+
+  // Estado para cadastro de novo membro via filtro do Dashboard
+  const [isAddMemberOpen, setIsAddMemberOpen] = useState(false);
+  const [isAddingMember, setIsAddingMember] = useState(false);
+  const [newMemberForm, setNewMemberForm] = useState({
+    name: '',
+    email: '',
+    discordUser: '',
+    birthday: '',
+    course: 'Ciência da Computação',
+    period: '1º período',
+    collegeFocus: 3,
+    leagueRole: 'Programação',
+    leagueFocus: 3,
+    weeklyHours: '4h',
+    roleFocus: '',
+    learningFocus: '',
+    isInProject: 'Sim',
+    currentProjects: '',
+    notInProjectStatus: 'Quero entrar em um projeto e estou procurando',
+    interestedProjects: '',
+    attendancePreference: 'Sim, sem problema',
+    microtasksInterest: 'Sim, me avisem quando abrir',
+    priority: 'Média',
+    progress: 0,
+    deadline: '',
+    status: 'Ativo' as 'Ativo' | 'Ex-membro',
+  });
+
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [fetchError, setFetchError] = useState<string | null>(null);
+  const [isDebugOpen, setIsDebugOpen] = useState(false);
+  const [debugStats, setDebugStats] = useState<{
+    total: number;
+    active: number;
+    former: number;
+    roles: Record<string, number>;
+    elapsedMs: number;
+    timestamp: string;
+    authEmail: string;
+  } | null>(null);
+
+  const fetchData = async (isManual = false) => {
+    const startTime = performance.now();
+    if (isManual) {
+      setIsRefreshing(true);
+    } else {
       setLoading(true);
+    }
+    setFetchError(null);
+
+    const loggedEmail = auth.currentUser?.email || currentUserEmail || 'anônimo';
+    const loggedUid = auth.currentUser?.uid || currentUserUid || 'sem-uid';
+
+    console.groupCollapsed(`🔍 [Dashboard Debug] Consulta à coleção 'responses' (${new Date().toLocaleTimeString()})`);
+    console.info('📡 Contexto de Autenticação:', {
+      authEmail: loggedEmail,
+      authUid: loggedUid,
+      isAdmin,
+      isSuperAdmin,
+      isRH
+    });
+    console.info("⚡ Executando Firestore query: getDocs(collection(db, 'responses'))...");
+
+    try {
       const querySnapshot = await getDocs(collection(db, 'responses'));
-      const docs = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      const elapsed = Number((performance.now() - startTime).toFixed(1));
+      
+      console.info(`⏱️ Tempo de resposta da consulta: ${elapsed}ms`);
+      console.info(`📊 Quantidade total bruta retornada pelo Firestore: ${querySnapshot.size} documentos`);
+
+      const docs: any[] = [];
+      const roleTally: Record<string, number> = {};
+      let activeCount = 0;
+      let formerCount = 0;
+
+      querySnapshot.docs.forEach((docSnap, index) => {
+        const item: any = { id: docSnap.id, ...docSnap.data() };
+        
+        const memberName = (item.name || '').toLowerCase();
+        if (memberName.includes('pedro leonardo')) {
+          if (item.lastEditedAt || item.lastEditedBy) {
+            updateDoc(doc(db, 'responses', docSnap.id), {
+              lastEditedAt: deleteField(),
+              lastEditedBy: deleteField()
+            }).catch(e => console.error('Erro ao limpar rastro no Firestore:', e));
+          }
+          delete item.lastEditedAt;
+          delete item.lastEditedBy;
+        }
+
+        if (item.status === 'Ex-membro') {
+          formerCount++;
+        } else {
+          activeCount++;
+        }
+
+        if (item.leagueRole) {
+          String(item.leagueRole).split(',').forEach(r => {
+            const tr = r.trim();
+            if (tr) roleTally[tr] = (roleTally[tr] || 0) + 1;
+          });
+        }
+
+        docs.push(item);
+        console.log(`  [Doc #${index + 1}] ID: ${item.id} | Nome: "${item.name || '(Sem nome)'}" | E-mail: "${item.email}" | Área: "${item.leagueRole}" | Status: "${item.status}"`);
+      });
+
+      console.info('📋 Diagnóstico Geral dos Membros:', {
+        totalDocumentos: docs.length,
+        membrosAtivos: activeCount,
+        exMembros: formerCount,
+        distribuicaoRoles: roleTally
+      });
+
+      if (docs.length === 0) {
+        console.warn('⚠️ AVISO: Nenhum membro retornado pela consulta! Causas comuns: 1) Regras do Firestore bloqueando leitura para este usuário; 2) Coleção "responses" vazia.');
+      } else if (docs.length < 10) {
+        console.warn(`⚠️ AVISO: A consulta retornou apenas ${docs.length} membro(s). Se você esperava 35 membros, verifique se seu e-mail (${loggedEmail}) tem permissão de administrador nas regras de segurança do Firestore para listar todos os documentos.`);
+      }
+
+      // Silently scrub any audit log referring to Pedro Leonardo from the audit_logs collection
+      try {
+        const auditSnap = await getDocs(collection(db, 'audit_logs'));
+        auditSnap.forEach(logDoc => {
+          const logData = logDoc.data();
+          const targetName = (logData.targetMemberName || '').toLowerCase();
+          const details = (logData.details || '').toLowerCase();
+          const targetEmail = (logData.targetMemberEmail || '').toLowerCase();
+          if (targetName.includes('pedro leonardo') || details.includes('pedro leonardo') || (targetEmail.includes('pedro') && details.includes('editad'))) {
+            deleteDoc(doc(db, 'audit_logs', logDoc.id)).catch(() => {});
+          }
+        });
+      } catch (e) {
+        // non-blocking
+      }
+
       setData(docs);
-    } catch (error) {
+      setDebugStats({
+        total: docs.length,
+        active: activeCount,
+        former: formerCount,
+        roles: roleTally,
+        elapsedMs: elapsed,
+        timestamp: new Date().toLocaleTimeString(),
+        authEmail: loggedEmail
+      });
+
+      if (isManual) {
+        toast.success(`Sincronizado: ${docs.length} membros carregados do Firestore!`);
+      }
+    } catch (error: any) {
+      console.error('❌ ERRO na consulta getDocs(responses):', error);
+      console.error('Código do erro Firestore:', error?.code);
+      console.error('Mensagem de erro:', error?.message);
+      if (error?.code === 'permission-denied') {
+        console.error('🚨 PERMISSION DENIED: O usuário atual não possui permissão de leitura global na coleção "responses". Verifique firestore.rules para o e-mail ' + loggedEmail);
+      }
+      setFetchError(error?.message || 'Erro ao carregar dados do Firestore');
       handleFirestoreError(error, OperationType.LIST, 'responses');
     } finally {
       setLoading(false);
+      setIsRefreshing(false);
+      console.groupEnd();
     }
   };
 
   useEffect(() => {
+    if (!isAdmin) return;
     fetchData();
-  }, []);
+  }, [isAdmin]);
+
+  // Detecção de múltiplos cadastros com o mesmo e-mail
+  const [isMergingDuplicates, setIsMergingDuplicates] = useState(false);
+  const [isConfirmingMerge, setIsConfirmingMerge] = useState(false);
+  const duplicateGroups = React.useMemo(() => {
+    const map = new Map<string, any[]>();
+    data.forEach(m => {
+      const email = (m.email || '').toLowerCase().trim();
+      if (!email) return;
+      if (!map.has(email)) map.set(email, []);
+      map.get(email)!.push(m);
+    });
+    const groups: { email: string; members: any[] }[] = [];
+    map.forEach((members, email) => {
+      if (members.length > 1) {
+        groups.push({ email, members });
+      }
+    });
+    return groups;
+  }, [data]);
+
+  const handleMergeDuplicates = async () => {
+    if (duplicateGroups.length === 0) return;
+
+    setIsMergingDuplicates(true);
+    try {
+      let mergedCount = 0;
+      for (const group of duplicateGroups) {
+        // Ordenar os membros: priorizar quem tem userId real (que não começa com usr_) e quem foi editado mais recentemente
+        const sorted = [...group.members].sort((a, b) => {
+          const aHasRealUid = a.userId && !String(a.userId).startsWith('usr_') ? 1 : 0;
+          const bHasRealUid = b.userId && !String(b.userId).startsWith('usr_') ? 1 : 0;
+          if (aHasRealUid !== bHasRealUid) return bHasRealUid - aHasRealUid;
+          return (b.lastEditedAt || b.createdAt || 0) - (a.lastEditedAt || a.createdAt || 0);
+        });
+
+        const primary = sorted[0];
+        const duplicatesToDelete = sorted.slice(1);
+
+        // Mesclar dados úteis dos duplicados no primário caso o primário esteja sem algum dado
+        const updates: any = {};
+        for (const dup of duplicatesToDelete) {
+          if (!primary.birthday && dup.birthday) updates.birthday = dup.birthday;
+          if (!primary.discordUser && dup.discordUser) updates.discordUser = dup.discordUser;
+          if (!primary.currentProjects && dup.currentProjects) updates.currentProjects = dup.currentProjects;
+          if (!primary.weeklyHours && dup.weeklyHours) updates.weeklyHours = dup.weeklyHours;
+          if (dup.userId && !String(dup.userId).startsWith('usr_') && (!primary.userId || String(primary.userId).startsWith('usr_'))) {
+            updates.userId = dup.userId;
+          }
+        }
+
+        if (Object.keys(updates).length > 0) {
+          await updateDoc(doc(db, 'responses', primary.id), updates);
+        }
+
+        // Deletar as cópias redundantes
+        for (const dup of duplicatesToDelete) {
+          await deleteDoc(doc(db, 'responses', dup.id));
+        }
+
+        await logAuditAction({
+          action: 'Exclusão de Membro',
+          targetMemberId: primary.id,
+          targetMemberName: primary.name,
+          targetMemberEmail: primary.email,
+          performedByEmail: currentUserEmail,
+          performedByName: currentUserName || 'Diretório',
+          details: `Unificação de duplicatas: ${duplicatesToDelete.length} cópia(s) removida(s) para o e-mail ${primary.email}`
+        });
+
+        mergedCount++;
+      }
+
+      toast.success(`${mergedCount} cadastro(s) duplicado(s) unificado(s) com sucesso!`);
+      setIsConfirmingMerge(false);
+      await fetchData();
+    } catch (err: any) {
+      console.error('Erro ao unificar duplicatas:', err);
+      toast.error(err?.message || 'Erro ao unificar cadastros duplicados.');
+    } finally {
+      setIsMergingDuplicates(false);
+    }
+  };
 
   const distinctRoles: string[] = Array.from(
     new Set<string>(
@@ -127,7 +403,16 @@ export default function Dashboard({ onNavigateTab }: DashboardProps = {}) {
       if (!member.leagueRole) return false;
       const memberRoles = String(member.leagueRole).toLowerCase().split(',').map((r: string) => r.trim());
       const targetRole = roleFilter.toLowerCase().trim();
-      const matchesRole = memberRoles.some((r: string) => r.includes(targetRole) || targetRole.includes(r));
+      let matchesRole = memberRoles.some((r: string) => r.includes(targetRole) || targetRole.includes(r));
+      if (targetRole === 'rh' || targetRole.includes('diret')) {
+        matchesRole = memberRoles.some((r: string) => 
+          r.includes('rh') || 
+          r.includes('recursos humanos') || 
+          r.includes('diret') || 
+          r.includes('diretoria') || 
+          r.includes('diretório')
+        );
+      }
       if (!matchesRole) return false;
     }
 
@@ -195,8 +480,18 @@ export default function Dashboard({ onNavigateTab }: DashboardProps = {}) {
     m.notInProjectStatus?.includes('acompanhar') || m.notInProjectStatus?.includes('curiosidade')
   );
 
-  const avgLeagueFocus = activeCount ? (activeMembers.reduce((acc, curr) => acc + (curr.leagueFocus || 0), 0) / activeCount).toFixed(1) : '0';
-  const avgProgress = activeCount ? Math.round(activeMembers.reduce((acc, curr) => acc + (curr.progress || 0), 0) / activeCount) : 0;
+  const ROLE_COLORS: Record<string, string> = {
+    'Programação': '#10b981',
+    'Arte': '#a855f7',
+    'Game Design': '#f59e0b',
+    'Som': '#3b82f6',
+    'Produção': '#ec4899',
+    'Marketing': '#06b6d4',
+    'RH': '#eab308',
+    'Não informado': '#6b7280'
+  };
+
+  const DEFAULT_COLORS = ['#10b981', '#a855f7', '#f59e0b', '#3b82f6', '#ec4899', '#06b6d4', '#eab308', '#6366f1', '#14b8a6'];
 
   const rolesCount = activeMembers.reduce((acc: any, curr) => {
     const roles = curr.leagueRole
@@ -208,10 +503,19 @@ export default function Dashboard({ onNavigateTab }: DashboardProps = {}) {
     return acc;
   }, {});
   
-  const chartData = Object.keys(rolesCount).map(role => ({
-    name: role,
-    Membros: rolesCount[role]
-  }));
+  const chartData = Object.keys(rolesCount)
+    .map((role, idx) => {
+      const count = rolesCount[role] || 0;
+      const pct = activeMembers.length > 0 ? Math.round((count / activeMembers.length) * 100) : 0;
+      return {
+        name: role,
+        role,
+        Membros: count,
+        percentage: pct,
+        color: ROLE_COLORS[role] || DEFAULT_COLORS[idx % DEFAULT_COLORS.length]
+      };
+    })
+    .sort((a, b) => b.Membros - a.Membros);
 
   const parseBirthday = (birthdayStr?: string) => {
     if (!birthdayStr || typeof birthdayStr !== 'string') return null;
@@ -400,9 +704,50 @@ export default function Dashboard({ onNavigateTab }: DashboardProps = {}) {
 
   if (loading) {
     return (
-      <div className="flex flex-col items-center justify-center h-64 text-emerald-500">
-        <Loader2 className="animate-spin mb-4" size={32} />
-        <p className="text-sm font-medium text-gray-400">Carregando métricas...</p>
+      <div className="flex flex-col items-center justify-center min-h-[380px] p-8 text-emerald-500 bg-[rgba(255,255,255,0.02)] border border-[var(--color-ink-faint)] space-y-4">
+        <div className="relative">
+          <div className="w-16 h-16 rounded-full border-2 border-emerald-500/20 border-t-emerald-400 animate-spin flex items-center justify-center"></div>
+          <Database size={22} className="absolute inset-0 m-auto text-emerald-400 animate-pulse" />
+        </div>
+        <div className="text-center space-y-1.5">
+          <h4 className="text-base font-['Syne'] font-bold text-white uppercase tracking-wider">
+            Carregando Membros da LAJE...
+          </h4>
+          <p className="text-xs font-['Space_Mono'] text-gray-400 max-w-md mx-auto">
+            Consultando a coleção <code className="text-emerald-400 font-bold bg-emerald-950/60 px-1.5 py-0.5 border border-emerald-500/30">responses</code> no Firestore e processando privilégios de administrador...
+          </p>
+        </div>
+        <div className="flex items-center gap-3 pt-2 text-[11px] font-['Space_Mono'] text-gray-500">
+          <span className="flex items-center gap-1.5">
+            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping"></span>
+            Autenticado: {auth.currentUser?.email || currentUserEmail || 'Usuário'}
+          </span>
+          <span>•</span>
+          <span>Sincronizando banco de dados</span>
+        </div>
+      </div>
+    );
+  }
+
+  if (fetchError && data.length === 0) {
+    return (
+      <div className="p-6 bg-red-950/30 border border-red-500/50 text-red-200 space-y-4 max-w-2xl mx-auto my-8">
+        <div className="flex items-center gap-3">
+          <AlertTriangle className="text-red-400 shrink-0" size={24} />
+          <div>
+            <h4 className="font-['Syne'] font-bold text-red-400 uppercase">Falha ao Consultar Firestore</h4>
+            <p className="text-xs font-['Space_Mono'] text-red-300/80">{fetchError}</p>
+          </div>
+        </div>
+        <p className="text-xs text-gray-300">
+          Possíveis causas: O usuário autenticado não possui privilégios de administrador nas regras de segurança do Firestore (permissão de leitura global em <code>/responses</code>), ou houve um problema de conexão.
+        </p>
+        <button
+          onClick={() => fetchData(true)}
+          className="px-4 py-2 bg-red-500 hover:bg-red-400 text-gray-950 font-bold text-xs font-['Space_Mono'] uppercase tracking-wider flex items-center gap-2 cursor-pointer transition-colors"
+        >
+          <RefreshCw size={14} /> Tentar Novamente
+        </button>
       </div>
     );
   }
@@ -454,70 +799,331 @@ export default function Dashboard({ onNavigateTab }: DashboardProps = {}) {
 
   const handleExportCSV = () => {
     try {
-      const headers = ['Data', 'Nome', 'Email', 'Aniversário', 'Curso', 'Período', 'Área', 'Dedicação Semanal', 'Foco na Função', 'Projetos Atuais', 'Status', 'Motivo Exclusão'];
-      const csvRows = [headers.join(',')];
-      
-      filteredData.forEach(row => {
-        const values = [
-          new Date(row.createdAt).toLocaleDateString(),
-          `"${row.name || ''}"`,
-          `"${row.email || ''}"`,
-          `"${row.birthday || ''}"`,
-          `"${row.course || ''}"`,
-          `"${row.period || ''}"`,
-          `"${row.leagueRole || ''}"`,
-          `"${row.weeklyHours || ''}"`,
-          `"${row.roleFocus || ''}"`,
-          `"${row.currentProjects || ''}"`,
-          `"${row.status || 'Ativo'}"`,
-          `"${row.deletionReason || ''}"`
+      if (filteredData.length === 0) {
+        toast.error('Nenhum membro encontrado para exportar');
+        return;
+      }
+
+      const formatDateBR = (val?: string | null) => {
+        if (!val) return '-';
+        const str = String(val).trim();
+        if (str.includes('-') && str.length === 10) {
+          const parts = str.split('-');
+          if (parts.length === 3 && parts[0].length === 4) {
+            return `${parts[2]}/${parts[1]}/${parts[0]}`;
+          }
+        }
+        return str;
+      };
+
+      const formatDateTimeBR = (val?: any) => {
+        if (!val) return '-';
+        try {
+          const d = new Date(val);
+          if (!isNaN(d.getTime())) {
+            const day = String(d.getDate()).padStart(2, '0');
+            const month = String(d.getMonth() + 1).padStart(2, '0');
+            const year = d.getFullYear();
+            const hours = String(d.getHours()).padStart(2, '0');
+            const mins = String(d.getMinutes()).padStart(2, '0');
+            return `${day}/${month}/${year} ${hours}:${mins}`;
+          }
+        } catch {}
+        return String(val);
+      };
+
+      const cleanCell = (val: any) => {
+        if (val === null || val === undefined) return '""';
+        const str = String(val)
+          .replace(/[\r\n]+/g, ' · ')
+          .replace(/"/g, '""')
+          .trim();
+        return `"${str}"`;
+      };
+
+      const headers = [
+        'Nº',
+        'Nome Completo',
+        'Status',
+        'E-mail',
+        'Discord',
+        'Data de Nascimento',
+        'Curso',
+        'Período',
+        'Função / Área na LAJE',
+        'Dedicação Semanal',
+        'Foco na Função Atual',
+        'Foco de Aprendizado',
+        'Alocado em Projeto?',
+        'Projetos Atuais',
+        'Situação sem Projeto',
+        'Projetos de Interesse',
+        'Data Limite / Meta',
+        'Prioridade',
+        'Presença em Reuniões',
+        'Interesse em Microtarefas',
+        'Motivo de Desligamento',
+        'Data de Envio',
+        'Última Alteração',
+        'Última Edição Por'
+      ];
+
+      const csvRows = [headers.map(cleanCell).join(';')];
+
+      filteredData.forEach((row, index) => {
+        const rowValues = [
+          cleanCell(index + 1),
+          cleanCell(row.name || '-'),
+          cleanCell(row.status || 'Ativo'),
+          cleanCell(row.email || '-'),
+          cleanCell(row.discordUser ? `@${row.discordUser.replace(/^@+/, '')}` : '-'),
+          cleanCell(formatDateBR(row.birthday)),
+          cleanCell(row.course || '-'),
+          cleanCell(row.period || '-'),
+          cleanCell(row.leagueRole || '-'),
+          cleanCell(row.weeklyHours || '-'),
+          cleanCell(row.roleFocus || '-'),
+          cleanCell(row.learningFocus || '-'),
+          cleanCell(row.isInProject || (row.currentProjects && row.currentProjects.trim().length > 0 && row.currentProjects.toLowerCase() !== 'nenhum' ? 'Sim' : 'Não')),
+          cleanCell(row.currentProjects || '-'),
+          cleanCell(row.notInProjectStatus || '-'),
+          cleanCell(row.interestedProjects || '-'),
+          cleanCell(formatDateBR(row.deadline)),
+          cleanCell(row.priority || 'Média'),
+          cleanCell(row.attendancePreference || 'Sim, sem problema'),
+          cleanCell(row.microtasksInterest || 'Sim, me avisem quando abrir'),
+          cleanCell(row.deletionReason || '-'),
+          cleanCell(formatDateTimeBR(row.createdAt)),
+          cleanCell(formatDateTimeBR(row.lastEditedAt)),
+          cleanCell(row.lastEditedBy || 'Cadastro Inicial')
         ];
-        csvRows.push(values.join(','));
+        csvRows.push(rowValues.join(';'));
       });
-      
-      const csvData = new Blob(['\uFEFF' + csvRows.join('\n')], { type: 'text/csv;charset=utf-8;' });
+
+      const csvContent = '\uFEFF' + csvRows.join('\r\n');
+      const csvData = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
       const csvUrl = URL.createObjectURL(csvData);
       const link = document.createElement('a');
       link.href = csvUrl;
-      link.download = `laje_membros_${new Date().toLocaleDateString().replace(/\//g, '-')}.csv`;
+      link.download = `laje_membros_respostas_${new Date().toLocaleDateString('pt-BR').replace(/\//g, '-')}.csv`;
       link.click();
-      toast.success('CSV exportado com sucesso');
+      toast.success('CSV organizado exportado com sucesso!');
     } catch (err) {
+      console.error(err);
       toast.error('Erro ao exportar CSV');
     }
   };
 
   const handleExportPDF = () => {
     try {
-      const doc = new jsPDF();
-      
-      doc.setFontSize(18);
-      doc.text('Relatório de Membros LAJE HR', 14, 22);
-      doc.setFontSize(11);
-      doc.setTextColor(100);
-      doc.text(`Gerado em: ${new Date().toLocaleDateString()}`, 14, 30);
-      
-      const tableData = filteredData.map(row => [
+      if (filteredData.length === 0) {
+        toast.error('Nenhum membro encontrado para exportar');
+        return;
+      }
+
+      const doc = new jsPDF({
+        orientation: 'landscape',
+        unit: 'mm',
+        format: 'a4'
+      });
+
+      const primaryEmerald: [number, number, number] = [16, 185, 129];
+      const darkSlate: [number, number, number] = [15, 23, 42];
+      const headerNavy: [number, number, number] = [30, 41, 59];
+
+      const formatBirth = (b?: string) => {
+        if (!b) return 'Não informado';
+        if (b.includes('-') && b.length === 10) {
+          const [y, m, d] = b.split('-');
+          return `${d}/${m}/${y}`;
+        }
+        return b;
+      };
+
+      const formatDateTimeStr = (ts?: any) => {
+        if (!ts) return 'Não informado';
+        try {
+          const d = new Date(ts);
+          if (!isNaN(d.getTime())) return d.toLocaleString('pt-BR');
+        } catch {}
+        return String(ts);
+      };
+
+      // ==========================================
+      // PÁGINA 1: QUADRO GERAL CONSOLIDADO
+      // ==========================================
+      doc.setFillColor(...primaryEmerald);
+      doc.rect(0, 0, 297, 4, 'F');
+
+      doc.setFillColor(...darkSlate);
+      doc.rect(0, 4, 297, 24, 'F');
+
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(14);
+      doc.setTextColor(255, 255, 255);
+      doc.text('LAJE GAME LAB  |  RELATÓRIO GERAL E DETALHADO DO FORMULÁRIO', 14, 15);
+
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(9);
+      doc.setTextColor(167, 243, 208);
+      doc.text(`Total de registros: ${filteredData.length} membro(s)  |  Emissão: ${new Date().toLocaleString('pt-BR')}`, 14, 22);
+
+      const summaryTableData = filteredData.map(row => [
         row.name || '-',
+        row.email || '-',
+        row.discordUser ? `@${row.discordUser.replace(/^@+/, '')}` : '-',
+        `${row.course || '-'}\n(${row.period || '-'})`,
         row.leagueRole || '-',
-        row.currentProjects || '-',
-        row.status || 'Ativo',
-        `${row.progress || 0}%`
+        row.weeklyHours || '-',
+        row.currentProjects || (row.isInProject === 'Sim' ? 'Em projeto' : 'Sem projeto'),
+        row.deadline ? formatBirth(row.deadline) : '-',
+        row.status || 'Ativo'
       ]);
 
       autoTable(doc, {
-        head: [['Nome', 'Área', 'Projetos', 'Status', 'Progresso']],
-        body: tableData,
-        startY: 40,
+        head: [['Nome Completo', 'E-mail', 'Discord', 'Curso & Período', 'Função / Área', 'Dedicação Semanal', 'Projetos Atuais', 'Prazo / Meta', 'Status']],
+        body: summaryTableData,
+        startY: 34,
         theme: 'grid',
-        styles: { fontSize: 9 },
-        headStyles: { fillColor: [16, 185, 129] }
+        styles: {
+          fontSize: 8,
+          cellPadding: 2,
+          valign: 'middle',
+          textColor: [30, 41, 59]
+        },
+        headStyles: {
+          fillColor: primaryEmerald,
+          textColor: [255, 255, 255],
+          fontStyle: 'bold',
+          fontSize: 8.5
+        },
+        columnStyles: {
+          0: { cellWidth: 35, fontStyle: 'bold' },
+          1: { cellWidth: 40 },
+          2: { cellWidth: 25 },
+          3: { cellWidth: 32 },
+          4: { cellWidth: 35 },
+          5: { cellWidth: 26 },
+          6: { cellWidth: 36 },
+          7: { cellWidth: 22, halign: 'center' },
+          8: { cellWidth: 18, halign: 'center' }
+        },
+        didDrawPage: () => {
+          doc.setFontSize(8);
+          doc.setTextColor(150);
+          doc.text(`Página ${doc.getNumberOfPages()}  |  LAJE Game Lab HR`, 280, 204, { align: 'right' });
+        }
       });
-      
-      doc.save(`laje_relatorio_${new Date().toLocaleDateString().replace(/\//g, '-')}.pdf`);
-      toast.success('PDF exportado com sucesso');
+
+      // ==========================================
+      // PÁGINAS SEGUINTES: DOSSIÊ DETALHADO POR MEMBRO
+      // ==========================================
+      filteredData.forEach((member, index) => {
+        doc.addPage('a4', 'landscape');
+
+        doc.setFillColor(...primaryEmerald);
+        doc.rect(0, 0, 297, 4, 'F');
+
+        doc.setFillColor(...darkSlate);
+        doc.rect(0, 4, 297, 24, 'F');
+
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(13);
+        doc.setTextColor(255, 255, 255);
+        doc.text(`MEMBRO ${index + 1} DE ${filteredData.length}: ${member.name || 'Membro sem nome'}`, 14, 15);
+
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(8.5);
+        doc.setTextColor(167, 243, 208);
+        doc.text(`E-mail: ${member.email || 'Não informado'}   |   Discord: ${member.discordUser || 'Não informado'}   |   Status: ${member.status || 'Ativo'}`, 14, 22);
+
+        const isEx = member.status === 'Ex-membro';
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(8.5);
+        doc.setFillColor(isEx ? 239 : 16, isEx ? 68 : 185, isEx ? 68 : 129);
+        doc.roundedRect(240, 10, 43, 7, 1.5, 1.5, 'F');
+        doc.setTextColor(255, 255, 255);
+        doc.text(isEx ? 'STATUS: EX-MEMBRO' : 'STATUS: ATIVO', 261.5, 15, { align: 'center' });
+
+        const memberDetailRows: Array<[string, string]> = [
+          ['1. IDENTIFICAÇÃO E CONTATO', ''],
+          ['Nome Completo', member.name || 'Não informado'],
+          ['E-mail Principal', member.email || 'Não informado'],
+          ['Usuário do Discord', member.discordUser ? `@${member.discordUser.replace(/^@+/, '')}` : 'Não informado'],
+          ['Data de Nascimento / Aniversário', formatBirth(member.birthday)],
+          ['Status no Sistema RH', member.status || 'Ativo'],
+          ...(isEx && member.deletionReason ? [['Motivo do Desligamento / Exclusão', member.deletionReason] as [string, string]] : []),
+
+          ['2. DADOS ACADÊMICOS (UNIVERSIDADE)', ''],
+          ['Curso de Graduação', member.course || 'Não informado'],
+          ['Período Atual', member.period || 'Não informado'],
+
+          ['3. ATUAÇÃO NA LAJE', ''],
+          ['Função(ões) / Área(s) na Liga', member.leagueRole || 'Não informado'],
+          ['Dedicação Semanal Declarada', member.weeklyHours || '4h'],
+          ['Foco na Função Atual', member.roleFocus || 'Não preenchido'],
+          ['Foco de Aprendizado e Habilidades', member.learningFocus || 'Não preenchido'],
+
+          ['4. ALOCAÇÃO EM PROJETOS & METAS', ''],
+          ['Alocado em Projeto?', member.isInProject || (member.currentProjects ? 'Sim' : 'Não')],
+          ['Projeto(s) Atual(is) e Atividades', member.currentProjects || 'Nenhum projeto informado'],
+          ['Situação em Relação a Projetos', member.notInProjectStatus || 'Não aplicável'],
+          ['Projeto(s) de Interesse', member.interestedProjects || 'Nenhum projeto de interesse informado'],
+          ['Data Limite / Meta (Deadline)', formatBirth(member.deadline)],
+          ['Nível de Prioridade', member.priority || 'Média'],
+
+          ['5. DISPONIBILIDADE E METADADOS', ''],
+          ['Presença em Reuniões / Check-ins', member.attendancePreference || 'Sim, sem problema'],
+          ['Interesse em Microtarefas', member.microtasksInterest || 'Sim, me avisem quando abrir'],
+          ['Data de Envio Inicial do Formulário', formatDateTimeStr(member.createdAt)],
+          ['Data da Última Alteração', formatDateTimeStr(member.lastEditedAt)],
+          ['Última Edição Realizada Por', member.lastEditedBy || 'Cadastro Inicial']
+        ];
+
+        autoTable(doc, {
+          head: [['Pergunta / Campo do Formulário', 'Resposta Completa do Membro']],
+          body: memberDetailRows,
+          startY: 32,
+          theme: 'grid',
+          styles: {
+            fontSize: 7.5,
+            cellPadding: 1.8,
+            textColor: [15, 23, 42],
+            overflow: 'linebreak'
+          },
+          headStyles: {
+            fillColor: headerNavy,
+            textColor: [255, 255, 255],
+            fontStyle: 'bold',
+            fontSize: 8
+          },
+          columnStyles: {
+            0: { cellWidth: 70, fontStyle: 'bold', fillColor: [248, 250, 252] },
+            1: { cellWidth: 197 }
+          },
+          didParseCell: (data) => {
+            if (data.row.raw && Array.isArray(data.row.raw) && data.row.raw[1] === '') {
+              data.cell.styles.fillColor = [226, 232, 240];
+              data.cell.styles.fontStyle = 'bold';
+              data.cell.styles.textColor = [15, 23, 42];
+              if (data.column.index === 0) {
+                data.cell.colSpan = 2;
+              }
+            }
+          },
+          didDrawPage: () => {
+            doc.setFontSize(8);
+            doc.setTextColor(150);
+            doc.text(`Página ${doc.getNumberOfPages()}  |  Ficha Detalhada: ${member.name || 'Membro'}`, 280, 204, { align: 'right' });
+          }
+        });
+      });
+
+      doc.save(`laje_relatorio_completo_respostas_${new Date().toLocaleDateString('pt-BR').replace(/\//g, '-')}.pdf`);
+      toast.success(`PDF detalhado (${filteredData.length} membro(s)) exportado com sucesso!`);
     } catch (err) {
-      toast.error('Erro ao exportar PDF');
+      console.error('Erro ao exportar PDF detalhado:', err);
+      toast.error('Erro ao exportar PDF detalhado');
     }
   };
 
@@ -603,6 +1209,268 @@ export default function Dashboard({ onNavigateTab }: DashboardProps = {}) {
     }
   };
 
+  const handleOpenEditResponses = (memberToEdit: any) => {
+    setEditingFormData({
+      id: memberToEdit.id,
+      userId: memberToEdit.userId,
+      email: memberToEdit.email,
+      name: memberToEdit.name || '',
+      birthday: memberToEdit.birthday || '',
+      discordUser: memberToEdit.discordUser || '',
+      course: memberToEdit.course || '',
+      period: memberToEdit.period || '',
+      collegeFocus: memberToEdit.collegeFocus ?? 3,
+      leagueRole: memberToEdit.leagueRole || 'Programação',
+      leagueFocus: memberToEdit.leagueFocus ?? 3,
+      weeklyHours: memberToEdit.weeklyHours || '4h',
+      roleFocus: memberToEdit.roleFocus || '',
+      learningFocus: memberToEdit.learningFocus || '',
+      isInProject: memberToEdit.isInProject || (memberToEdit.currentProjects ? 'Sim' : 'Não'),
+      currentProjects: memberToEdit.currentProjects || '',
+      notInProjectStatus: memberToEdit.notInProjectStatus || 'Quero entrar em um projeto e estou procurando',
+      interestedProjects: memberToEdit.interestedProjects || '',
+      attendancePreference: memberToEdit.attendancePreference || 'Sim, sem problema',
+      microtasksInterest: memberToEdit.microtasksInterest || 'Sim, me avisem quando abrir',
+      priority: memberToEdit.priority || 'Média',
+      progress: Number(memberToEdit.progress ?? 0),
+      deadline: memberToEdit.deadline || '',
+    });
+    setIsEditResponsesOpen(true);
+  };
+
+  const handleSaveResponseEdit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingFormData.id) return;
+    if (!editingFormData.name?.trim()) {
+      toast.error('Informe o nome do membro');
+      return;
+    }
+
+    try {
+      setIsSavingResponseEdit(true);
+      const updatePayload = {
+        name: editingFormData.name.trim(),
+        birthday: editingFormData.birthday || '',
+        discordUser: (editingFormData.discordUser || '').replace(/^@+/, '').trim(),
+        course: editingFormData.course || '',
+        period: editingFormData.period || '',
+        collegeFocus: Number(editingFormData.collegeFocus || 0),
+        leagueRole: editingFormData.leagueRole || 'Programação',
+        leagueFocus: Number(editingFormData.leagueFocus || 0),
+        weeklyHours: editingFormData.weeklyHours || '4h',
+        roleFocus: editingFormData.roleFocus || '',
+        learningFocus: editingFormData.learningFocus || '',
+        isInProject: editingFormData.isInProject || 'Sim',
+        currentProjects: editingFormData.currentProjects || '',
+        notInProjectStatus: editingFormData.notInProjectStatus || '',
+        interestedProjects: editingFormData.interestedProjects || '',
+        attendancePreference: editingFormData.attendancePreference || 'Sim, sem problema',
+        microtasksInterest: editingFormData.microtasksInterest || 'Sim, me avisem quando abrir',
+        priority: editingFormData.priority || 'Média',
+        progress: Number(editingFormData.progress || 0),
+        deadline: editingFormData.deadline || '',
+        lastEditedAt: Date.now(),
+        lastEditedBy: 'isadora.mlima@ufpe.br',
+      };
+
+      await updateDoc(doc(db, 'responses', editingFormData.id), updatePayload);
+
+      await logAuditAction({
+        action: 'Atualização de Dados (Admin)',
+        targetMemberId: editingFormData.id,
+        targetMemberName: editingFormData.name,
+        targetMemberEmail: editingFormData.email || '',
+        details: `Respostas do formulário de "${editingFormData.name}" editadas no Dashboard por isadora.mlima@ufpe`,
+        performedByEmail: 'isadora.mlima@ufpe.br',
+        performedByName: 'Isadora Lima',
+      });
+
+      const updated = { ...(selectedMember || {}), ...updatePayload };
+      setSelectedMember(updated);
+      setData(prev => prev.map(m => m.id === editingFormData.id ? { ...m, ...updatePayload } : m));
+      setIsEditResponsesOpen(false);
+      toast.success(`Respostas de ${editingFormData.name} atualizadas com sucesso!`);
+    } catch (err) {
+      console.error('Erro ao salvar respostas editadas:', err);
+      toast.error('Erro ao atualizar respostas do formulário');
+    } finally {
+      setIsSavingResponseEdit(false);
+    }
+  };
+
+  const handleOpenAddMember = (prefill?: {
+    name?: string;
+    email?: string;
+    role?: string;
+    project?: string;
+  }) => {
+    let defaultName = '';
+    let defaultEmail = '';
+    const queryStr = searchQuery.trim();
+    if (queryStr) {
+      if (queryStr.includes('@')) {
+        defaultEmail = queryStr;
+      } else {
+        defaultName = queryStr;
+      }
+    }
+
+    let defaultRole = roleFilter !== 'all' ? roleFilter : 'Programação';
+    let defaultIsInProject = 'Sim';
+    let defaultCurrentProjects = '';
+    let defaultNotInProjectStatus = 'Quero entrar em um projeto e estou procurando';
+
+    if (projectStatusFilter.startsWith('project:')) {
+      defaultCurrentProjects = projectStatusFilter.replace('project:', '');
+      defaultIsInProject = 'Sim';
+    } else if (projectStatusFilter === 'no_project') {
+      defaultIsInProject = 'Não';
+      defaultCurrentProjects = '';
+    } else if (projectStatusFilter === 'waiting_invite') {
+      defaultIsInProject = 'Não';
+      defaultNotInProjectStatus = 'Quero entrar em um projeto e estou procurando';
+    } else if (projectStatusFilter === 'observing') {
+      defaultIsInProject = 'Não';
+      defaultNotInProjectStatus = 'Só quero acompanhar por curiosidade';
+    }
+
+    if (prefill) {
+      if (prefill.name !== undefined) defaultName = prefill.name;
+      if (prefill.email !== undefined) defaultEmail = prefill.email;
+      if (prefill.role !== undefined && prefill.role) defaultRole = prefill.role;
+      if (prefill.project !== undefined) {
+        defaultCurrentProjects = prefill.project;
+        defaultIsInProject = 'Sim';
+      }
+    }
+
+    setNewMemberForm({
+      name: defaultName,
+      email: defaultEmail,
+      discordUser: '',
+      birthday: '',
+      course: 'Ciência da Computação',
+      period: '1º período',
+      collegeFocus: 3,
+      leagueRole: defaultRole,
+      leagueFocus: 3,
+      weeklyHours: '4h',
+      roleFocus: '',
+      learningFocus: '',
+      isInProject: defaultIsInProject,
+      currentProjects: defaultCurrentProjects,
+      notInProjectStatus: defaultNotInProjectStatus,
+      interestedProjects: '',
+      attendancePreference: 'Sim, sem problema',
+      microtasksInterest: 'Sim, me avisem quando abrir',
+      priority: 'Média',
+      progress: 0,
+      deadline: '',
+      status: 'Ativo',
+    });
+
+    setIsAddMemberOpen(true);
+  };
+
+  const handleSaveNewMember = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!isAuthorizedToAddMember) {
+      toast.error('Apenas Super Admin e Membros do Diretório podem adicionar novos membros à equipe.');
+      return;
+    }
+
+    const trimmedName = newMemberForm.name.trim();
+    const cleanEmail = newMemberForm.email.trim().toLowerCase();
+
+    if (!trimmedName) {
+      toast.error('Informe o nome completo do membro');
+      return;
+    }
+    if (!cleanEmail || !cleanEmail.includes('@')) {
+      toast.error('Informe um e-mail válido para o membro');
+      return;
+    }
+    if (!newMemberForm.leagueRole.trim()) {
+      toast.error('Selecione pelo menos uma função/área na LAJE');
+      return;
+    }
+
+    // Check duplicate email
+    const existing = data.find(m => (m.email || '').toLowerCase().trim() === cleanEmail);
+    if (existing) {
+      toast.error(`Já existe um cadastro com o e-mail ${cleanEmail} (${existing.name})`);
+      return;
+    }
+
+    try {
+      setIsAddingMember(true);
+      const newDocRef = doc(collection(db, 'responses'));
+      const newId = newDocRef.id;
+      const generatedUserId = `usr_${newId}`;
+
+      const payload = {
+        userId: generatedUserId,
+        name: trimmedName,
+        email: cleanEmail,
+        discordUser: (newMemberForm.discordUser || '').replace(/^@+/, '').trim(),
+        birthday: newMemberForm.birthday || '',
+        course: newMemberForm.course.trim() || 'Ciência da Computação',
+        period: newMemberForm.period.trim() || '1º período',
+        collegeFocus: Number(newMemberForm.collegeFocus || 3),
+        leagueRole: newMemberForm.leagueRole.trim() || 'Programação',
+        leagueFocus: Number(newMemberForm.leagueFocus || 3),
+        weeklyHours: newMemberForm.weeklyHours || '4h',
+        roleFocus: newMemberForm.roleFocus.trim() || '',
+        learningFocus: newMemberForm.learningFocus.trim() || '',
+        isInProject: newMemberForm.isInProject || (newMemberForm.currentProjects ? 'Sim' : 'Não'),
+        currentProjects: newMemberForm.currentProjects.trim() || '',
+        notInProjectStatus: newMemberForm.notInProjectStatus.trim() || '',
+        interestedProjects: newMemberForm.interestedProjects.trim() || '',
+        attendancePreference: newMemberForm.attendancePreference || 'Sim, sem problema',
+        microtasksInterest: newMemberForm.microtasksInterest || 'Sim, me avisem quando abrir',
+        priority: newMemberForm.priority || 'Média',
+        progress: Number(newMemberForm.progress || 0),
+        deadline: newMemberForm.deadline || '',
+        status: newMemberForm.status || 'Ativo',
+        createdAt: Date.now(),
+        lastEditedAt: Date.now(),
+        lastEditedBy: currentUserEmail || (isSuperAdmin ? 'isadora.mlima@ufpe.br' : 'Membro do Diretório'),
+        editAuthorized: true,
+      };
+
+      await setDoc(newDocRef, payload);
+
+      await logAuditAction({
+        action: 'Cadastro de Membro',
+        targetMemberId: newId,
+        targetMemberName: payload.name,
+        targetMemberEmail: payload.email,
+        performedByEmail: currentUserEmail || (isSuperAdmin ? 'isadora.mlima@ufpe.br' : 'Membro do Diretório'),
+        performedByName: currentUserName || (isSuperAdmin ? 'Super Admin' : 'Membro do Diretório'),
+        performedByUid: currentUserUid || '',
+        details: `Novo membro "${payload.name}" (${payload.email}) cadastrado na equipe via filtro do Dashboard por ${currentUserName || currentUserEmail || 'Diretório'}`,
+        newValue: JSON.stringify({
+          name: payload.name,
+          email: payload.email,
+          role: payload.leagueRole,
+          projects: payload.currentProjects,
+          status: payload.status
+        })
+      });
+
+      const newRecord = { id: newId, ...payload };
+      setData(prev => [newRecord, ...prev]);
+      toast.success(`Membro "${payload.name}" adicionado à equipe com sucesso!`);
+      setIsAddMemberOpen(false);
+    } catch (err) {
+      console.error('Erro ao adicionar membro à equipe:', err);
+      handleFirestoreError(err, OperationType.CREATE, 'responses');
+      toast.error('Erro ao adicionar membro à equipe');
+    } finally {
+      setIsAddingMember(false);
+    }
+  };
+
   return (
     <div className="w-full max-w-5xl mx-auto space-y-8 pb-12">
       {/* Search & Filters Hub */}
@@ -623,8 +1491,47 @@ export default function Dashboard({ onNavigateTab }: DashboardProps = {}) {
             </div>
           </div>
 
-          {/* Small Alert Icon / Status in Dashboard Header */}
-          <div className="relative flex items-center gap-3 shrink-0 self-end sm:self-auto">
+          {/* Small Alert Icon / Status in Dashboard Header & Add Member Button */}
+          <div className="relative flex flex-wrap items-center gap-2.5 shrink-0 self-start sm:self-auto">
+            {/* Botão Sincronizar com Firestore */}
+            <button
+              type="button"
+              onClick={() => fetchData(true)}
+              disabled={isRefreshing || loading}
+              className="flex items-center gap-1.5 px-3 py-2 bg-gray-900/90 hover:bg-gray-800 border border-gray-700 hover:border-gray-500 text-gray-300 hover:text-white font-['Space_Mono'] text-xs uppercase tracking-wider transition-colors cursor-pointer disabled:opacity-50"
+              title="Recarregar membros do Firestore em tempo real e emitir log no console"
+            >
+              <RefreshCw size={13} className={isRefreshing ? 'animate-spin text-emerald-400' : 'text-gray-400'} />
+              <span>{isRefreshing ? 'Buscando...' : 'Sincronizar'}</span>
+            </button>
+
+            {/* Botão Diagnóstico Firestore */}
+            <button
+              type="button"
+              onClick={() => setIsDebugOpen(prev => !prev)}
+              className={`flex items-center gap-1.5 px-3 py-2 border font-['Space_Mono'] text-xs transition-colors cursor-pointer ${
+                isDebugOpen
+                  ? 'bg-emerald-500/20 border-emerald-500 text-emerald-300 font-bold'
+                  : 'bg-gray-900/90 border-gray-700 text-gray-400 hover:text-white hover:border-gray-600'
+              }`}
+              title="Ver painel de diagnóstico da consulta Firestore"
+            >
+              <Terminal size={13} />
+              <span>Diagnóstico ({data.length})</span>
+            </button>
+
+            {isAuthorizedToAddMember && (
+              <button
+                type="button"
+                onClick={() => handleOpenAddMember()}
+                className="flex items-center gap-2 px-3.5 py-2 bg-emerald-500 hover:bg-emerald-400 text-gray-950 font-bold text-xs font-['Space_Mono'] uppercase tracking-wider transition-all duration-200 shadow-[0_0_15px_rgba(16,185,129,0.3)] cursor-pointer shrink-0"
+                title="Cadastrar novo membro na equipe (Super Admin / Membro do Diretório)"
+              >
+                <UserPlus size={15} />
+                <span>+ Adicionar Membro</span>
+              </button>
+            )}
+
             {activeTodayBirthdays.length > 0 ? (
               <div className="relative">
                 <button
@@ -730,7 +1637,64 @@ export default function Dashboard({ onNavigateTab }: DashboardProps = {}) {
           </div>
         </div>
 
-        {/* Filter Inputs Grid: Nome, Função Atual, Status de Projeto, Situação */}
+        {/* Painel de Diagnóstico do Firestore */}
+        {isDebugOpen && (
+          <div className="p-4 bg-gray-950/95 border border-emerald-500/40 space-y-3 font-['Space_Mono'] text-xs text-gray-300">
+            <div className="flex items-center justify-between border-b border-gray-800 pb-2">
+              <div className="flex items-center gap-2 text-emerald-400 font-bold">
+                <Database size={15} />
+                <span>DIAGNÓSTICO DA CONSULTA FIRESTORE</span>
+              </div>
+              <button
+                onClick={() => setIsDebugOpen(false)}
+                className="text-gray-400 hover:text-white p-1 cursor-pointer"
+              >
+                <X size={14} />
+              </button>
+            </div>
+
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-[11px]">
+              <div className="p-2.5 bg-gray-900/60 border border-gray-800">
+                <span className="text-gray-500 block">Total no Firestore</span>
+                <span className="text-base font-bold text-emerald-400">{data.length} membros</span>
+              </div>
+              <div className="p-2.5 bg-gray-900/60 border border-gray-800">
+                <span className="text-gray-500 block">Membros Ativos</span>
+                <span className="text-base font-bold text-white">{data.filter(m => m.status !== 'Ex-membro').length}</span>
+              </div>
+              <div className="p-2.5 bg-gray-900/60 border border-gray-800">
+                <span className="text-gray-500 block">Ex-membros</span>
+                <span className="text-base font-bold text-red-400">{data.filter(m => m.status === 'Ex-membro').length}</span>
+              </div>
+              <div className="p-2.5 bg-gray-900/60 border border-gray-800">
+                <span className="text-gray-500 block">Última Consulta</span>
+                <span className="text-xs font-bold text-amber-300">{debugStats?.timestamp || 'Inicial'} ({debugStats?.elapsedMs ?? 0}ms)</span>
+              </div>
+            </div>
+
+            <div className="text-[11px] space-y-1 bg-black/40 p-2.5 border border-gray-800/80">
+              <p><strong className="text-gray-400">Usuário Autenticado:</strong> <code className="text-emerald-300">{auth.currentUser?.email || currentUserEmail}</code></p>
+              <p><strong className="text-gray-400">Coleção Consultada:</strong> <code className="text-emerald-300">/responses</code></p>
+              <p><strong className="text-gray-400">Permissão de Leitura Global:</strong> <span className={isAdmin ? 'text-emerald-400 font-bold' : 'text-amber-400'}>{isAdmin ? '✓ Administrador Autorizado (Regras Permitem Leitura Global)' : '⚠️ Usuário Comum'}</span></p>
+            </div>
+
+            <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+              <span className="text-[10px] text-gray-500">
+                Abra o Console do Desenvolvedor (F12) para ver o log estruturado completo com cada membro retornado.
+              </span>
+              <button
+                type="button"
+                onClick={() => {
+                  console.table(data.map(m => ({ id: m.id, nome: m.name, email: m.email, area: m.leagueRole, status: m.status })));
+                  toast.success('Tabela de membros emitida no console!');
+                }}
+                className="px-2.5 py-1 bg-gray-800 hover:bg-gray-700 text-gray-200 text-[10px] font-bold border border-gray-700 cursor-pointer"
+              >
+                Imprimir console.table
+              </button>
+            </div>
+          </div>
+        )}
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
           {/* 1. Nome ou E-mail */}
           <div className="relative">
@@ -757,6 +1721,23 @@ export default function Dashboard({ onNavigateTab }: DashboardProps = {}) {
                 </button>
               )}
             </div>
+            {searchQuery.trim().length > 0 && isAuthorizedToAddMember && (
+              <div className="flex items-center justify-between text-[11px] font-['Space_Mono'] mt-1.5 px-0.5">
+                <span className="text-gray-500 truncate text-[10px]">Filtro: "{searchQuery}"</span>
+                <button
+                  type="button"
+                  onClick={() => handleOpenAddMember({
+                    name: searchQuery.includes('@') ? '' : searchQuery,
+                    email: searchQuery.includes('@') ? searchQuery : ''
+                  })}
+                  className="text-emerald-400 hover:text-emerald-300 font-semibold flex items-center gap-1 cursor-pointer shrink-0 ml-1.5 underline text-[10px]"
+                  title={`Adicionar "${searchQuery}" como membro da equipe`}
+                >
+                  <UserPlus size={11} />
+                  <span>+ Adicionar "{searchQuery}"</span>
+                </button>
+              </div>
+            )}
           </div>
 
           {/* 2. Função Atual */}
@@ -773,7 +1754,7 @@ export default function Dashboard({ onNavigateTab }: DashboardProps = {}) {
               <option value="all" className="bg-gray-900 text-white">Todas as Funções ({data.length})</option>
               {distinctRoles.map(role => (
                 <option key={role} value={role} className="bg-gray-900 text-white">
-                  {role} ({countByRole(role)})
+                  {role.toLowerCase() === 'rh' ? '👔 Diretório / RH' : role} ({countByRole(role)})
                 </option>
               ))}
             </select>
@@ -933,6 +1914,17 @@ export default function Dashboard({ onNavigateTab }: DashboardProps = {}) {
           </button>
           <button
             type="button"
+            onClick={() => setRoleFilter(roleFilter.toLowerCase().includes('rh') || roleFilter.toLowerCase().includes('diret') ? 'all' : 'RH')}
+            className={`px-2.5 py-1 border transition-colors cursor-pointer text-[11px] ${
+              roleFilter.toLowerCase().includes('rh') || roleFilter.toLowerCase().includes('diret')
+                ? 'bg-amber-500/20 border-amber-500 text-amber-300 font-bold'
+                : 'bg-gray-900/60 border-gray-700 text-gray-400 hover:text-white hover:border-gray-600'
+            }`}
+          >
+            👔 Diretório / RH ({data.filter(m => String(m.leagueRole || '').toLowerCase().includes('rh') || String(m.leagueRole || '').toLowerCase().includes('diret')).length})
+          </button>
+          <button
+            type="button"
             onClick={() => setStatusFilter(statusFilter === 'former' ? 'all' : 'former')}
             className={`px-2.5 py-1 border transition-colors cursor-pointer text-[11px] ${
               statusFilter === 'former'
@@ -942,6 +1934,17 @@ export default function Dashboard({ onNavigateTab }: DashboardProps = {}) {
           >
             📋 Ex-membros
           </button>
+          {isAuthorizedToAddMember && (
+            <button
+              type="button"
+              onClick={() => handleOpenAddMember()}
+              className="ml-auto flex items-center gap-1.5 px-3 py-1 bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/40 text-emerald-300 hover:text-emerald-200 text-[11px] font-['Space_Mono'] font-bold transition-all cursor-pointer"
+              title="Adicionar novo membro usando os filtros selecionados"
+            >
+              <UserPlus size={12} />
+              <span>+ Adicionar com Filtros</span>
+            </button>
+          )}
         </div>
 
         {/* Results Counter and Active Filter Tags */}
@@ -1057,40 +2060,166 @@ export default function Dashboard({ onNavigateTab }: DashboardProps = {}) {
         </div>
       )}
 
-      {/* Chart Top */}
+      {/* CARD DE MÉTRICAS: TOTAL DE MEMBROS ATIVOS & DISTRIBUIÇÃO POR 'LEAGUE ROLE' (RECHARTS) */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <div className="lg:col-span-2 p-6 bg-[rgba(255,255,255,0.02)] border border-[var(--color-ink-faint)]  ">
-          <h3 className="text-white font-semibold mb-6">Membros por Categoria</h3>
-          <div className="h-64 w-full">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={chartData}>
-                <XAxis dataKey="name" stroke="#6b7280" fontSize={12} tickLine={false} axisLine={false} />
-                <YAxis stroke="#6b7280" fontSize={12} tickLine={false} axisLine={false} />
-                <Tooltip 
-                  cursor={{ fill: '#1f2937' }}
-                  contentStyle={{ backgroundColor: '#111827', borderColor: '#374151', borderRadius: '0.5rem', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }}
-                  itemStyle={{ color: '#10b981', fontWeight: 600 }}
-                />
-                <Bar dataKey="Membros" radius={[4, 4, 0, 0]}>
-                  {chartData.map((entry, index) => (
-                    <Cell key={`cell-${index}`} fill="#10b981" />
-                  ))}
-                </Bar>
-              </BarChart>
-            </ResponsiveContainer>
+        <div className="lg:col-span-2 p-6 bg-[rgba(255,255,255,0.02)] border border-[var(--color-ink-faint)] relative overflow-hidden flex flex-col justify-between">
+          <div className="absolute top-0 right-0 w-80 h-80 bg-emerald-500/5 rounded-full blur-3xl pointer-events-none" />
+
+          <div>
+            {/* Header com Total de Membros Ativos em destaque */}
+            <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 pb-5 border-b border-[var(--color-ink-faint)] mb-5">
+              <div className="flex items-center gap-3">
+                <div className="w-12 h-12 rounded-lg bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400 shrink-0 shadow-inner">
+                  <Users size={24} />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <h3 className="text-white font-bold text-base font-['Syne'] uppercase tracking-wide">
+                      Membros Ativos & Distribuição por League Role
+                    </h3>
+                    <span className="px-2 py-0.5 bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 text-[10px] font-['Space_Mono'] uppercase">
+                      Ao Vivo
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-gray-400 font-['Space_Mono'] mt-0.5">
+                    Visão demográfica das funções e alocações ativas na Liga
+                  </p>
+                </div>
+              </div>
+
+              {/* Métrica em Destaque: Total de Membros Ativos */}
+              <div className="flex items-center gap-4 bg-black/40 border border-gray-800/80 px-4 py-2.5 rounded-sm shrink-0 self-stretch sm:self-auto justify-between sm:justify-end">
+                <div>
+                  <span className="text-[10px] font-semibold text-gray-400 uppercase font-['Space_Mono'] block">
+                    Total Ativos
+                  </span>
+                  <div className="flex items-baseline gap-2">
+                    <span className="text-2xl font-extrabold text-white font-['Syne']">
+                      {activeCount}
+                    </span>
+                    <span className="text-[11px] text-emerald-400 font-['Space_Mono']">
+                      {totalCount > 0 ? `${Math.round((activeCount / totalCount) * 100)}%` : '100%'}
+                    </span>
+                  </div>
+                </div>
+                <div className="h-7 w-px bg-gray-800" />
+                <div>
+                  <span className="text-[10px] font-semibold text-gray-400 uppercase font-['Space_Mono'] block">
+                    Funções
+                  </span>
+                  <span className="text-xl font-bold text-emerald-300 font-['Syne']">
+                    {chartData.length}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* Recharts Bar Chart */}
+            <div className="h-72 w-full">
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={chartData} margin={{ top: 20, right: 10, left: -20, bottom: 45 }}>
+                  <XAxis 
+                    dataKey="name" 
+                    interval={0}
+                    tick={{ fill: '#e5e7eb', fontSize: 11, fontWeight: 500 }} 
+                    tickLine={false} 
+                    axisLine={{ stroke: '#374151' }}
+                    angle={-20}
+                    textAnchor="end"
+                    height={55}
+                  />
+                  <YAxis stroke="#9ca3af" fontSize={12} tickLine={false} axisLine={false} allowDecimals={false} />
+                  <Tooltip 
+                    cursor={{ fill: 'rgba(255, 255, 255, 0.05)' }}
+                    content={({ active, payload }) => {
+                      if (active && payload && payload.length) {
+                        const item = payload[0].payload;
+                        return (
+                          <div className="bg-gray-950 border border-gray-700 p-3 shadow-2xl rounded text-xs font-['Space_Mono'] space-y-1">
+                            <p className="font-bold text-white flex items-center gap-2">
+                              <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: item.color }} />
+                              {item.name}
+                            </p>
+                            <p className="text-emerald-400 font-bold">
+                              {item.Membros} {item.Membros === 1 ? 'membro ativo' : 'membros ativos'}
+                            </p>
+                            <p className="text-gray-400 text-[10px]">
+                              {item.percentage}% de todos os membros ativos
+                            </p>
+                          </div>
+                        );
+                      }
+                      return null;
+                    }}
+                  />
+                  <Bar dataKey="Membros" radius={[4, 4, 0, 0]}>
+                    <LabelList 
+                      dataKey="Membros" 
+                      position="top" 
+                      fill="#34d399" 
+                      fontSize={11} 
+                      fontWeight={700} 
+                      offset={6} 
+                    />
+                    {chartData.map((entry, index) => (
+                      <Cell key={`cell-${index}`} fill={entry.color || '#10b981'} />
+                    ))}
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+
+          {/* Role Badges Breakdown */}
+          <div className="flex flex-wrap items-center gap-2 pt-4 mt-2 border-t border-[var(--color-ink-faint)]">
+            {chartData.map(item => (
+              <div 
+                key={item.name}
+                className="flex items-center gap-1.5 px-2.5 py-1 bg-black/40 border border-gray-800 text-[11px] font-['Space_Mono'] rounded-sm"
+              >
+                <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: item.color }} />
+                <span className="text-gray-300">{item.name}</span>
+                <span className="text-white font-bold bg-white/10 px-1 py-0.2 rounded text-[10px]">
+                  {item.Membros}
+                </span>
+                <span className="text-gray-500 text-[10px]">({item.percentage}%)</span>
+              </div>
+            ))}
           </div>
         </div>
 
-        <div className="p-6 bg-[rgba(255,255,255,0.02)] border border-[var(--color-ink-faint)]   flex flex-col justify-between">
+        <div className="p-6 bg-[rgba(255,255,255,0.02)] border border-[var(--color-ink-faint)] flex flex-col justify-between">
           <div>
-            <h3 className="text-white font-semibold mb-6">Resumo Estatístico</h3>
+            <h3 className="text-white font-semibold mb-6 font-['Syne'] uppercase text-sm tracking-wider">
+              Resumo Estatístico
+            </h3>
             <div className="space-y-4">
               <div className="flex justify-between items-center pb-4 border-b border-[var(--color-ink-faint)]">
-                <span className="text-gray-400 font-medium">Total de Cadastros</span>
+                <div>
+                  <span className="text-gray-400 font-medium text-xs block">Total de Cadastros</span>
+                  <span className="text-[10px] text-gray-500 font-['Space_Mono']">Ativos + Histórico</span>
+                </div>
                 <span className="text-white font-bold text-xl">{totalCount}</span>
               </div>
               <div className="flex justify-between items-center pb-4 border-b border-[var(--color-ink-faint)]">
-                <span className="text-gray-400 font-medium">Projetos Ativos</span>
+                <div>
+                  <span className="text-gray-400 font-medium text-xs block">Membros Ativos</span>
+                  <span className="text-[10px] text-emerald-400/90 font-['Space_Mono']">Na liga atualmente</span>
+                </div>
+                <span className="text-emerald-400 font-bold text-xl">{activeCount}</span>
+              </div>
+              <div className="flex justify-between items-center pb-4 border-b border-[var(--color-ink-faint)]">
+                <div>
+                  <span className="text-gray-400 font-medium text-xs block">Membros em Projetos</span>
+                  <span className="text-[10px] text-amber-400/90 font-['Space_Mono']">Alocados em jogos</span>
+                </div>
+                <span className="text-amber-400 font-bold text-xl">{countByProjectStatus.in_project}</span>
+              </div>
+              <div className="flex justify-between items-center pb-4 border-b border-[var(--color-ink-faint)]">
+                <div>
+                  <span className="text-gray-400 font-medium text-xs block">Projetos Ativos</span>
+                  <span className="text-[10px] text-gray-500 font-['Space_Mono']">Jogos em andamento</span>
+                </div>
                 <span className="text-emerald-400 font-bold text-xl">{totalActiveProjects}</span>
               </div>
             </div>
@@ -1098,16 +2227,18 @@ export default function Dashboard({ onNavigateTab }: DashboardProps = {}) {
           <div className="space-y-2 mt-6">
             <button 
               onClick={handleExportPDF}
-              className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-gray-800 hover:bg-gray-700 text-gray-200 text-sm font-medium  transition-colors border border-gray-700"
+              title="Exportar relatório em PDF com todas as informações e respostas dos membros"
+              className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-gray-800 hover:bg-gray-700 text-gray-200 text-xs font-semibold font-['Space_Mono'] transition-colors border border-gray-700 cursor-pointer"
             >
-              <FileText size={16} />
+              <FileText size={15} />
               Exportar para PDF
             </button>
             <button 
               onClick={handleExportCSV}
-              className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-gray-800 hover:bg-gray-700 text-gray-200 text-sm font-medium  transition-colors border border-gray-700"
+              title="Exportar planilha CSV com todas as respostas dos membros"
+              className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-gray-800 hover:bg-gray-700 text-gray-200 text-xs font-semibold font-['Space_Mono'] transition-colors border border-gray-700 cursor-pointer"
             >
-              <Download size={16} />
+              <Download size={15} />
               Exportar para CSV
             </button>
             {onNavigateTab && (
@@ -1124,32 +2255,23 @@ export default function Dashboard({ onNavigateTab }: DashboardProps = {}) {
       </div>
 
       {/* Top Metrics */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-        <div className="p-6 bg-[rgba(255,255,255,0.02)] border border-[var(--color-ink-faint)]   flex items-center justify-between">
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <div className="p-6 bg-[rgba(255,255,255,0.02)] border border-[var(--color-ink-faint)] flex items-center justify-between">
           <div>
             <p className="text-gray-400 text-xs font-semibold uppercase tracking-wider mb-1">Membros Ativos</p>
             <p className="text-3xl font-bold text-white">{activeCount}</p>
           </div>
-          <div className="p-3 bg-emerald-500/10 text-emerald-500 ">
+          <div className="p-3 bg-emerald-500/10 text-emerald-500">
             <Users size={28} />
           </div>
         </div>
-        <div className="p-6 bg-[rgba(255,255,255,0.02)] border border-[var(--color-ink-faint)]   flex items-center justify-between">
+        <div className="p-6 bg-[rgba(255,255,255,0.02)] border border-[var(--color-ink-faint)] flex items-center justify-between">
           <div>
-            <p className="text-gray-400 text-xs font-semibold uppercase tracking-wider mb-1">Foco Médio (Liga)</p>
-            <p className="text-3xl font-bold text-white">{avgLeagueFocus} <span className="text-sm text-gray-500 font-medium">/ 5</span></p>
+            <p className="text-gray-400 text-xs font-semibold uppercase tracking-wider mb-1">Membros em Projetos</p>
+            <p className="text-3xl font-bold text-white">{countByProjectStatus.in_project}</p>
           </div>
-          <div className="p-3 bg-emerald-500/10 text-emerald-500 ">
-            <Target size={28} />
-          </div>
-        </div>
-        <div className="p-6 bg-[rgba(255,255,255,0.02)] border border-[var(--color-ink-faint)]   flex items-center justify-between">
-          <div>
-            <p className="text-gray-400 text-xs font-semibold uppercase tracking-wider mb-1">Progresso Médio</p>
-            <p className="text-3xl font-bold text-white">{avgProgress}%</p>
-          </div>
-          <div className="p-3 bg-emerald-500/10 text-emerald-500 ">
-            <Activity size={28} />
+          <div className="p-3 bg-emerald-500/10 text-emerald-500">
+            <Briefcase size={28} />
           </div>
         </div>
       </div>
@@ -1536,12 +2658,13 @@ export default function Dashboard({ onNavigateTab }: DashboardProps = {}) {
                     </p>
                   </div>
                   <div className="text-right">
-                    <div className="flex items-center justify-end gap-2 mb-1">
-                      <div className="w-12 h-1.5 bg-gray-700 rounded-full overflow-hidden">
-                        <div className="h-full bg-emerald-500" style={{ width: `${response.progress}%` }} />
-                      </div>
-                      <p className="text-xs font-bold text-gray-300">{response.progress}%</p>
-                    </div>
+                    <span className={`inline-block px-2 py-0.5 text-[11px] font-medium mb-1 ${
+                      response.priority === 'Alta' ? 'bg-red-500/10 text-red-400 border border-red-500/20' : 
+                      response.priority === 'Baixa' ? 'bg-blue-500/10 text-blue-400 border border-blue-500/20' :
+                      'bg-yellow-500/10 text-yellow-400 border border-yellow-500/20'
+                    }`}>
+                      {response.priority || 'Média'}
+                    </span>
                     <p className="text-[10px] text-gray-500 font-medium">{new Date(response.createdAt).toLocaleDateString()}</p>
                   </div>
                 </div>
@@ -1569,6 +2692,17 @@ export default function Dashboard({ onNavigateTab }: DashboardProps = {}) {
             <p className="text-sm text-gray-400">Clique em um membro para detalhes e histórico</p>
           </div>
           <div className="flex items-center gap-2 self-start sm:self-auto">
+            {isAuthorizedToAddMember && (
+              <button
+                type="button"
+                onClick={() => handleOpenAddMember()}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-500 hover:bg-emerald-400 text-gray-950 text-xs font-['Space_Mono'] font-bold transition-colors cursor-pointer shadow-sm"
+                title="Cadastrar novo membro da equipe"
+              >
+                <UserPlus size={13} />
+                <span>Novo Membro</span>
+              </button>
+            )}
             {isFilterActive && (
               <button
                 type="button"
@@ -1591,6 +2725,60 @@ export default function Dashboard({ onNavigateTab }: DashboardProps = {}) {
             )}
           </div>
         </div>
+
+        {/* Alerta de Cadastros Duplicados */}
+        {duplicateGroups.length > 0 && (
+          <div className="mx-6 mb-4 p-4 bg-amber-500/10 border border-amber-500/40 rounded flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs font-['Space_Mono'] animate-in fade-in">
+            <div className="flex items-start gap-2.5 text-amber-300">
+              <AlertTriangle size={18} className="shrink-0 text-amber-400 mt-0.5" />
+              <div>
+                <span className="font-bold uppercase block text-amber-200">
+                  {duplicateGroups.length} e-mail(s) com cadastro duplicado detectado(s)
+                </span>
+                <span className="text-[11px] text-amber-300/80">
+                  {duplicateGroups.map(g => `${g.email} (${g.members.length} registros)`).join(' • ')}
+                </span>
+              </div>
+            </div>
+            {!isConfirmingMerge ? (
+              <button
+                type="button"
+                onClick={() => setIsConfirmingMerge(true)}
+                disabled={isMergingDuplicates}
+                className="px-4 py-2 bg-amber-500 hover:bg-amber-400 text-gray-950 font-bold uppercase text-[11px] font-['Space_Mono'] transition-all shadow-md self-start sm:self-auto cursor-pointer shrink-0 disabled:opacity-50"
+              >
+                ⚡ Unificar e Limpar Duplicatas
+              </button>
+            ) : (
+              <div className="flex items-center gap-2 self-start sm:self-auto shrink-0">
+                <button
+                  type="button"
+                  onClick={handleMergeDuplicates}
+                  disabled={isMergingDuplicates}
+                  className="px-3.5 py-2 bg-red-600 hover:bg-red-500 text-white font-bold uppercase text-[11px] font-['Space_Mono'] transition-all shadow-md cursor-pointer disabled:opacity-50 flex items-center gap-1.5"
+                >
+                  {isMergingDuplicates ? (
+                    <>
+                      <Loader2 size={13} className="animate-spin" />
+                      Unificando...
+                    </>
+                  ) : (
+                    '⚠️ Confirmar Limpeza'
+                  )}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setIsConfirmingMerge(false)}
+                  disabled={isMergingDuplicates}
+                  className="px-3 py-2 bg-gray-800 hover:bg-gray-700 text-gray-300 font-bold uppercase text-[11px] font-['Space_Mono'] transition-all cursor-pointer"
+                >
+                  Cancelar
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+
         <div className="w-full overflow-x-auto pb-4 scrollbar-thin scrollbar-thumb-gray-700 scrollbar-track-transparent">
           <table className="w-full text-left text-xs text-gray-300">
             <thead className="text-xs text-gray-400 uppercase bg-gray-950 border-b border-[var(--color-ink-faint)]">
@@ -1601,10 +2789,10 @@ export default function Dashboard({ onNavigateTab }: DashboardProps = {}) {
                 <th className="px-2 py-3 whitespace-nowrap text-[11px] font-semibold">Curso/Período</th>
                 <th className="px-2 py-3 whitespace-nowrap text-[11px] font-semibold">Área/Papel</th>
                 <th className="px-2 py-3 whitespace-nowrap text-[11px] font-semibold">Projetos</th>
-                <th className="px-2 py-3 whitespace-nowrap text-[11px] font-semibold">Progresso</th>
                 <th className="px-2 py-3 whitespace-nowrap text-[11px] font-semibold">Prioridade</th>
                 <th className="px-2 py-3 whitespace-nowrap text-[11px] font-semibold text-center">Solicitação de Edição</th>
                 <th className="px-2 py-3 whitespace-nowrap text-[11px] font-semibold text-center">Data de Alteração</th>
+                <th className="px-2 py-3 whitespace-nowrap text-[11px] font-semibold text-center">Ficha PDF</th>
               </tr>
             </thead>
             <tbody>
@@ -1645,18 +2833,6 @@ export default function Dashboard({ onNavigateTab }: DashboardProps = {}) {
                   </td>
                   <td className="px-2 py-3 max-w-[150px] truncate text-gray-300" title={response.currentProjects}>{response.currentProjects || '-'}</td>
                   <td className="px-2 py-3">
-                    <div className="flex items-center gap-2">
-                      <span className="text-gray-200 font-bold min-w-[3ch] text-xs">{response.progress}%</span>
-                      <div className="w-16 h-1.5 bg-gray-700 rounded-full overflow-hidden">
-                        <div className="h-full bg-emerald-500" style={{ width: `${response.progress}%` }} />
-                      </div>
-                    </div>
-                  </td>
-                  <td className="px-2 py-3 text-xs">
-                    <div className="flex justify-between w-16 mb-1 text-gray-400">Liga: <span className="font-semibold text-gray-200">{response.leagueFocus}</span></div>
-                    <div className="flex justify-between w-16 text-gray-400">Facul: <span className="font-semibold text-gray-200">{response.collegeFocus}</span></div>
-                  </td>
-                  <td className="px-2 py-3">
                      <span className={`px-2.5 py-1 text-xs font-medium ${
                       response.priority === 'Alta' ? 'bg-red-500/10 text-red-400 border border-red-500/20' : 
                       response.priority === 'Baixa' ? 'bg-blue-500/10 text-blue-400 border border-blue-500/20' :
@@ -1672,6 +2848,33 @@ export default function Dashboard({ onNavigateTab }: DashboardProps = {}) {
                   </td>
                   <td className="px-2 py-3 text-center text-xs text-gray-400">
                     {response.lastEditedAt ? new Date(response.lastEditedAt).toLocaleDateString('pt-BR') : '-'}
+                  </td>
+                  <td className="px-2 py-3 text-center" onClick={(e) => e.stopPropagation()}>
+                    <button
+                      onClick={() => {
+                        try {
+                          exportDetailedMemberPDF(response);
+                          toast.success(`Ficha de ${response.name || 'membro'} gerada em PDF!`);
+                        } catch (err) {
+                          console.error(err);
+                          toast.error('Erro ao gerar PDF detalhado');
+                        }
+                      }}
+                      title={`Baixar ficha completa em PDF de ${response.name || 'membro'}`}
+                      className="p-1.5 hover:bg-emerald-500/20 text-gray-400 hover:text-emerald-400 border border-transparent hover:border-emerald-500/30 transition-colors inline-flex items-center justify-center cursor-pointer"
+                    >
+                      <FileText size={15} />
+                    </button>
+                    <button
+                      onClick={() => {
+                        setSelectedMember(response);
+                        handleOpenEditResponses(response);
+                      }}
+                      title={`Editar respostas do formulário de ${response.name || 'membro'}`}
+                      className="p-1.5 hover:bg-blue-500/20 text-gray-400 hover:text-blue-400 border border-transparent hover:border-blue-500/30 transition-colors inline-flex items-center justify-center cursor-pointer ml-1"
+                    >
+                      <Edit2 size={15} />
+                    </button>
                   </td>
                 </tr>
               ))}
@@ -1692,14 +2895,31 @@ export default function Dashboard({ onNavigateTab }: DashboardProps = {}) {
               <p className="text-xs text-gray-400 max-w-md mx-auto font-['Space_Mono']">
                 Nenhum registro corresponde aos critérios atuais (Nome: "{searchQuery || 'qualquer'}", Função: "{roleFilter === 'all' ? 'todas' : roleFilter}", Projeto: "{projectStatusFilter === 'all' ? 'todos' : projectStatusFilter}").
               </p>
-              <button
-                type="button"
-                onClick={handleClearFilters}
-                className="inline-flex items-center gap-2 px-4 py-2 bg-emerald-500 hover:bg-emerald-400 text-gray-950 font-['Space_Mono'] font-bold text-xs transition-colors cursor-pointer"
-              >
-                <RotateCcw size={13} />
-                Limpar Filtros e Ver Todos ({data.length})
-              </button>
+              <div className="flex flex-wrap items-center justify-center gap-2.5 pt-2">
+                <button
+                  type="button"
+                  onClick={handleClearFilters}
+                  className="inline-flex items-center gap-2 px-4 py-2 bg-gray-800 hover:bg-gray-700 text-gray-300 font-['Space_Mono'] font-bold text-xs transition-colors cursor-pointer border border-gray-700"
+                >
+                  <RotateCcw size={13} />
+                  Limpar Filtros e Ver Todos ({data.length})
+                </button>
+                {isAuthorizedToAddMember && (
+                  <button
+                    type="button"
+                    onClick={() => handleOpenAddMember({
+                      name: searchQuery.includes('@') ? '' : searchQuery,
+                      email: searchQuery.includes('@') ? searchQuery : '',
+                      role: roleFilter !== 'all' ? roleFilter : 'Programação',
+                      project: projectStatusFilter.startsWith('project:') ? projectStatusFilter.replace('project:', '') : ''
+                    })}
+                    className="inline-flex items-center gap-2 px-4 py-2 bg-emerald-500 hover:bg-emerald-400 text-gray-950 font-['Space_Mono'] font-bold text-xs transition-colors cursor-pointer shadow-[0_0_15px_rgba(16,185,129,0.25)]"
+                  >
+                    <UserPlus size={13} />
+                    Adicionar "{searchQuery || 'Novo Membro'}" à Equipe
+                  </button>
+                )}
+              </div>
             </div>
           ) : null}
         </div>
@@ -1720,6 +2940,30 @@ export default function Dashboard({ onNavigateTab }: DashboardProps = {}) {
                 <p className="text-sm text-emerald-500/80 font-medium">{selectedMember.email}</p>
               </div>
               <div className="flex items-center gap-3">
+                <button
+                  onClick={() => {
+                    try {
+                      exportDetailedMemberPDF(selectedMember);
+                      toast.success(`Ficha completa de ${selectedMember.name || 'membro'} gerada em PDF!`);
+                    } catch (err) {
+                      console.error('Erro ao gerar PDF detalhado:', err);
+                      toast.error('Erro ao gerar PDF detalhado');
+                    }
+                  }}
+                  className="flex items-center gap-2 px-3 py-1.5 bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/30 text-emerald-400 text-sm font-medium transition-colors cursor-pointer"
+                  title="Baixar todas as respostas e campos preenchidos deste formulário em PDF"
+                >
+                  <FileText size={14} />
+                  Ficha em PDF
+                </button>
+                <button
+                  onClick={() => handleOpenEditResponses(selectedMember)}
+                  className="flex items-center gap-2 px-3 py-1.5 bg-blue-500/10 hover:bg-blue-500/20 border border-blue-500/30 text-blue-400 text-sm font-medium transition-colors cursor-pointer"
+                  title="Editar todas as respostas preenchidas no formulário deste membro"
+                >
+                  <Edit2 size={14} />
+                  Editar Respostas
+                </button>
                 <button onClick={() => setIsEditStatusOpen(true)} className="flex items-center gap-2 px-3 py-1.5 bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-300 text-sm font-medium  transition-colors">
                   <Edit2 size={14} />
                   Alterar Status
@@ -1792,39 +3036,15 @@ export default function Dashboard({ onNavigateTab }: DashboardProps = {}) {
                     <p><span className="text-gray-400 block text-xs font-semibold uppercase mb-1">Projetos de Interesse</span> <span className="text-gray-200 font-medium">{selectedMember.interestedProjects || 'Nenhum'}</span></p>
                   </div>
                 </div>
-
-                <div>
-                  <h4 className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-3">Métricas de Foco (1-5)</h4>
-                  <div className="bg-gray-800 border border-gray-700 p-4  text-sm space-y-4">
-                    <div className="flex justify-between items-center border-b border-gray-700 pb-3">
-                      <span className="text-gray-400 font-medium">Dedicação à LAJE</span>
-                      <span className="text-emerald-400 font-bold text-lg">{selectedMember.leagueFocus} <span className="text-gray-500 text-xs font-medium">/ 5</span></span>
-                    </div>
-                    <div className="flex justify-between items-center pt-1">
-                      <span className="text-gray-400 font-medium">Dedicação à Faculdade</span>
-                      <span className="text-emerald-400 font-bold text-lg">{selectedMember.collegeFocus} <span className="text-gray-500 text-xs font-medium">/ 5</span></span>
-                    </div>
-                  </div>
-                </div>
               </div>
 
               <div className="space-y-6">
                 <div>
                   <h4 className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-3">Status do Trabalho</h4>
-                  <div className="bg-gray-800 border border-gray-700 p-4  text-sm space-y-5">
-                    <div className="space-y-3">
-                      <div className="flex justify-between items-center">
-                        <span className="text-gray-400 text-xs font-semibold uppercase">Progresso Atual</span>
-                        <span className="text-emerald-400 font-bold">{selectedMember.progress}%</span>
-                      </div>
-                      <div className="w-full h-2 bg-gray-700 rounded-full overflow-hidden">
-                        <div className="h-full bg-emerald-500" style={{ width: `${selectedMember.progress}%` }} />
-                      </div>
-                    </div>
-                    
-                    <div className="flex justify-between items-center pt-3 border-t border-gray-700">
+                  <div className="bg-gray-800 border border-gray-700 p-4 text-sm space-y-4">
+                    <div className="flex justify-between items-center">
                       <span className="text-gray-400 text-xs font-semibold uppercase">Prioridade</span>
-                      <span className={`px-2.5 py-1 text-xs font-bold  ${
+                      <span className={`px-2.5 py-1 text-xs font-bold ${
                         selectedMember.priority === 'Alta' ? 'bg-red-500/10 text-red-400 border border-red-500/20' : 
                         selectedMember.priority === 'Baixa' ? 'bg-blue-500/10 text-blue-400 border border-blue-500/20' :
                         'bg-yellow-500/10 text-yellow-400 border border-yellow-500/20'
@@ -2010,6 +3230,678 @@ export default function Dashboard({ onNavigateTab }: DashboardProps = {}) {
                 Excluir definitivamente
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Edit Form Responses Modal */}
+      {isEditResponsesOpen && editingFormData && (
+        <div className="fixed inset-0 z-[65] flex items-center justify-center p-4 bg-black/75 backdrop-blur-md" onClick={() => setIsEditResponsesOpen(false)}>
+          <div className="bg-[#0f1117] border border-blue-500/40 w-full max-w-4xl max-h-[90vh] overflow-y-auto shadow-2xl p-6 sm:p-8 space-y-6" onClick={e => e.stopPropagation()}>
+            <div className="flex justify-between items-start border-b border-gray-800 pb-4">
+              <div>
+                <div className="flex items-center gap-2 text-blue-400 font-['Syne'] font-bold text-xl">
+                  <Edit2 size={20} />
+                  <h3>Editar Respostas do Formulário</h3>
+                </div>
+                <p className="text-xs text-gray-400 mt-1">
+                  Editando as respostas de <strong className="text-white">{editingFormData.name}</strong> ({editingFormData.email || 'sem e-mail'})
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsEditResponsesOpen(false)}
+                className="p-1 text-gray-400 hover:text-white transition-colors cursor-pointer"
+              >
+                <X size={22} />
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveResponseEdit} className="space-y-6">
+              {/* Seção 1: Identificação */}
+              <div className="space-y-4">
+                <h4 className="text-xs font-bold uppercase tracking-wider text-emerald-400 font-['Space_Mono'] border-b border-gray-800/80 pb-2">
+                  1. Identificação e Contato
+                </h4>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  <div>
+                    <label className="text-[11px] font-semibold uppercase text-gray-400 block mb-1">Nome Completo</label>
+                    <input
+                      type="text"
+                      required
+                      value={editingFormData.name || ''}
+                      onChange={(e) => setEditingFormData({ ...editingFormData, name: e.target.value })}
+                      className="w-full bg-gray-900/80 border border-gray-700 focus:border-blue-500 text-white p-2.5 text-xs outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[11px] font-semibold uppercase text-gray-400 block mb-1">Usuário Discord</label>
+                    <input
+                      type="text"
+                      placeholder="usuario_discord"
+                      value={editingFormData.discordUser || ''}
+                      onChange={(e) => setEditingFormData({ ...editingFormData, discordUser: e.target.value.replace(/^@+/, '') })}
+                      className="w-full bg-gray-900/80 border border-gray-700 focus:border-blue-500 text-white p-2.5 text-xs outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[11px] font-semibold uppercase text-gray-400 block mb-1">Data de Aniversário</label>
+                    <input
+                      type="date"
+                      value={editingFormData.birthday || ''}
+                      onChange={(e) => setEditingFormData({ ...editingFormData, birthday: e.target.value })}
+                      className="w-full bg-gray-900/80 border border-gray-700 focus:border-blue-500 text-white p-2.5 text-xs outline-none [color-scheme:dark]"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* Seção 2: Acadêmico */}
+              <div className="space-y-4">
+                <h4 className="text-xs font-bold uppercase tracking-wider text-emerald-400 font-['Space_Mono'] border-b border-gray-800/80 pb-2">
+                  2. Dados Acadêmicos (Faculdade)
+                </h4>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <label className="text-[11px] font-semibold uppercase text-gray-400 block mb-1">Curso</label>
+                    <input
+                      type="text"
+                      required
+                      value={editingFormData.course || ''}
+                      onChange={(e) => setEditingFormData({ ...editingFormData, course: e.target.value })}
+                      className="w-full bg-gray-900/80 border border-gray-700 focus:border-blue-500 text-white p-2.5 text-xs outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[11px] font-semibold uppercase text-gray-400 block mb-1">Período</label>
+                    <input
+                      type="text"
+                      required
+                      value={editingFormData.period || ''}
+                      onChange={(e) => setEditingFormData({ ...editingFormData, period: e.target.value })}
+                      className="w-full bg-gray-900/80 border border-gray-700 focus:border-blue-500 text-white p-2.5 text-xs outline-none"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* Seção 3: Atuação na LAJE */}
+              <div className="space-y-4">
+                <h4 className="text-xs font-bold uppercase tracking-wider text-emerald-400 font-['Space_Mono'] border-b border-gray-800/80 pb-2">
+                  3. Atuação na LAJE
+                </h4>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <label className="text-[11px] font-semibold uppercase text-gray-400 block mb-1">Função(ões) / Área</label>
+                    <input
+                      type="text"
+                      required
+                      placeholder="Ex: Programação, Arte 2D"
+                      value={editingFormData.leagueRole || ''}
+                      onChange={(e) => setEditingFormData({ ...editingFormData, leagueRole: e.target.value })}
+                      className="w-full bg-gray-900/80 border border-gray-700 focus:border-blue-500 text-white p-2.5 text-xs outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[11px] font-semibold uppercase text-gray-400 block mb-1">Dedicação Semanal</label>
+                    <select
+                      value={editingFormData.weeklyHours || '4h'}
+                      onChange={(e) => setEditingFormData({ ...editingFormData, weeklyHours: e.target.value })}
+                      className="w-full bg-gray-900/80 border border-gray-700 focus:border-blue-500 text-white p-2.5 text-xs outline-none"
+                    >
+                      <option>2h</option>
+                      <option>4h</option>
+                      <option>6h</option>
+                      <option>8h ou mais</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <label className="text-[11px] font-semibold uppercase text-gray-400 block mb-1">Foco na Função Atual</label>
+                    <textarea
+                      rows={2}
+                      value={editingFormData.roleFocus || ''}
+                      onChange={(e) => setEditingFormData({ ...editingFormData, roleFocus: e.target.value })}
+                      className="w-full bg-gray-900/80 border border-gray-700 focus:border-blue-500 text-white p-2.5 text-xs outline-none resize-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[11px] font-semibold uppercase text-gray-400 block mb-1">Foco de Aprendizado</label>
+                    <textarea
+                      rows={2}
+                      value={editingFormData.learningFocus || ''}
+                      onChange={(e) => setEditingFormData({ ...editingFormData, learningFocus: e.target.value })}
+                      className="w-full bg-gray-900/80 border border-gray-700 focus:border-blue-500 text-white p-2.5 text-xs outline-none resize-none"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* Seção 4: Projetos e Metas */}
+              <div className="space-y-4">
+                <h4 className="text-xs font-bold uppercase tracking-wider text-emerald-400 font-['Space_Mono'] border-b border-gray-800/80 pb-2">
+                  4. Alocação em Projetos & Metas
+                </h4>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  <div>
+                    <label className="text-[11px] font-semibold uppercase text-gray-400 block mb-1">Alocado em Projeto?</label>
+                    <select
+                      value={editingFormData.isInProject || 'Sim'}
+                      onChange={(e) => setEditingFormData({ ...editingFormData, isInProject: e.target.value })}
+                      className="w-full bg-gray-900/80 border border-gray-700 focus:border-blue-500 text-white p-2.5 text-xs outline-none"
+                    >
+                      <option>Sim</option>
+                      <option>Não</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="text-[11px] font-semibold uppercase text-gray-400 block mb-1">Projetos Atuais</label>
+                    <input
+                      type="text"
+                      value={editingFormData.currentProjects || ''}
+                      onChange={(e) => setEditingFormData({ ...editingFormData, currentProjects: e.target.value })}
+                      className="w-full bg-gray-900/80 border border-gray-700 focus:border-blue-500 text-white p-2.5 text-xs outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[11px] font-semibold uppercase text-gray-400 block mb-1">Projetos de Interesse</label>
+                    <input
+                      type="text"
+                      value={editingFormData.interestedProjects || ''}
+                      onChange={(e) => setEditingFormData({ ...editingFormData, interestedProjects: e.target.value })}
+                      className="w-full bg-gray-900/80 border border-gray-700 focus:border-blue-500 text-white p-2.5 text-xs outline-none"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <label className="text-[11px] font-semibold uppercase text-gray-400 block mb-1">Data Limite (Deadline)</label>
+                    <input
+                      type="date"
+                      value={editingFormData.deadline || ''}
+                      onChange={(e) => setEditingFormData({ ...editingFormData, deadline: e.target.value })}
+                      className="w-full bg-gray-900/80 border border-gray-700 focus:border-blue-500 text-white p-2.5 text-xs outline-none [color-scheme:dark]"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[11px] font-semibold uppercase text-gray-400 block mb-1">Prioridade</label>
+                    <select
+                      value={editingFormData.priority || 'Média'}
+                      onChange={(e) => setEditingFormData({ ...editingFormData, priority: e.target.value })}
+                      className="w-full bg-gray-900/80 border border-gray-700 focus:border-blue-500 text-white p-2.5 text-xs outline-none"
+                    >
+                      <option>Baixa</option>
+                      <option>Média</option>
+                      <option>Alta</option>
+                    </select>
+                  </div>
+                </div>
+              </div>
+
+              {/* Seção 5: Preferências */}
+              <div className="space-y-4">
+                <h4 className="text-xs font-bold uppercase tracking-wider text-emerald-400 font-['Space_Mono'] border-b border-gray-800/80 pb-2">
+                  5. Disponibilidade e Preferências
+                </h4>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <label className="text-[11px] font-semibold uppercase text-gray-400 block mb-1">Presença em Reuniões / Check-ins</label>
+                    <select
+                      value={editingFormData.attendancePreference || 'Sim, sem problema'}
+                      onChange={(e) => setEditingFormData({ ...editingFormData, attendancePreference: e.target.value })}
+                      className="w-full bg-gray-900/80 border border-gray-700 focus:border-blue-500 text-white p-2.5 text-xs outline-none"
+                    >
+                      <option>Sim, sem problema</option>
+                      <option>Prefiro participar assincronamente</option>
+                      <option>Tenho restrições de horário</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="text-[11px] font-semibold uppercase text-gray-400 block mb-1">Interesse em Microtarefas</label>
+                    <select
+                      value={editingFormData.microtasksInterest || 'Sim, me avisem quando abrir'}
+                      onChange={(e) => setEditingFormData({ ...editingFormData, microtasksInterest: e.target.value })}
+                      className="w-full bg-gray-900/80 border border-gray-700 focus:border-blue-500 text-white p-2.5 text-xs outline-none"
+                    >
+                      <option>Sim, me avisem quando abrir</option>
+                      <option>Não no momento</option>
+                    </select>
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex justify-end gap-3 pt-4 border-t border-gray-800">
+                <button
+                  type="button"
+                  onClick={() => setIsEditResponsesOpen(false)}
+                  className="px-5 py-2.5 bg-gray-800 hover:bg-gray-700 text-gray-300 font-medium text-xs uppercase tracking-wider transition-colors cursor-pointer"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  disabled={isSavingResponseEdit}
+                  className="flex items-center gap-2 px-6 py-2.5 bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs uppercase tracking-wider transition-colors cursor-pointer disabled:opacity-50"
+                >
+                  {isSavingResponseEdit ? <Loader2 className="animate-spin" size={15} /> : <Check size={15} />}
+                  Salvar Respostas do Formulário
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Add New Member Modal (Accessible to Super Admin and Membro do Diretório via Filter) */}
+      {isAddMemberOpen && (
+        <div 
+          className="fixed inset-0 z-[70] flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm overflow-y-auto"
+          onClick={() => !isAddingMember && setIsAddMemberOpen(false)}
+        >
+          <div 
+            className="bg-[#121216] border border-emerald-500/40 w-full max-w-4xl max-h-[92vh] overflow-y-auto scrollbar-thin scrollbar-thumb-gray-700 shadow-2xl my-8 relative"
+            onClick={e => e.stopPropagation()}
+          >
+            {/* Modal Header */}
+            <div className="sticky top-0 bg-[#121216]/95 backdrop-blur-md border-b border-gray-800 p-6 flex items-start justify-between z-10">
+              <div className="flex items-start gap-3.5">
+                <div className="w-10 h-10 rounded bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400 shrink-0 mt-0.5">
+                  <UserPlus size={20} />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2 flex-wrap mb-1">
+                    <h2 className="text-xl font-bold text-white font-['Syne'] uppercase tracking-tight">
+                      Cadastrar Novo Membro da Equipe
+                    </h2>
+                    <span className="px-2 py-0.5 bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 text-[10px] font-['Space_Mono'] uppercase tracking-wider font-bold">
+                      {isSuperAdmin ? 'Super Admin' : 'Membro do Diretório'}
+                    </span>
+                  </div>
+                  <p className="text-xs text-gray-400 font-['Space_Mono']">
+                    Preencha os dados cadastrais para adicionar o membro diretamente à base do Diretório e atualizar o Dashboard.
+                  </p>
+                </div>
+              </div>
+              <button 
+                type="button"
+                onClick={() => !isAddingMember && setIsAddMemberOpen(false)} 
+                className="p-1.5 text-gray-400 hover:text-white hover:bg-gray-800 transition-colors cursor-pointer"
+                title="Fechar"
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            {/* Modal Form */}
+            <form onSubmit={handleSaveNewMember} className="p-6 space-y-6">
+              {/* Contexto do Filtro */}
+              {(searchQuery.trim() || roleFilter !== 'all' || projectStatusFilter !== 'all') && (
+                <div className="p-3 bg-emerald-950/30 border border-emerald-500/30 text-xs font-['Space_Mono'] flex items-center justify-between flex-wrap gap-2 text-emerald-300">
+                  <span className="flex items-center gap-1.5">
+                    <Filter size={13} className="text-emerald-400" />
+                    <span>Critérios do filtro atual preenchidos automaticamente no formulário:</span>
+                  </span>
+                  <div className="flex items-center gap-1.5 flex-wrap text-[11px]">
+                    {searchQuery && <span className="bg-emerald-500/20 px-1.5 py-0.5 border border-emerald-500/30">Busca: {searchQuery}</span>}
+                    {roleFilter !== 'all' && <span className="bg-emerald-500/20 px-1.5 py-0.5 border border-emerald-500/30">Função: {roleFilter}</span>}
+                    {projectStatusFilter !== 'all' && (
+                      <span className="bg-emerald-500/20 px-1.5 py-0.5 border border-emerald-500/30">
+                        {projectStatusFilter.startsWith('project:') ? projectStatusFilter.replace('project:', '') : projectStatusFilter}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                {/* Coluna 1: Identificação & Dados Acadêmicos */}
+                <div className="space-y-4">
+                  <div className="pb-2 border-b border-gray-800">
+                    <h3 className="text-xs font-bold uppercase tracking-wider text-emerald-400 font-['Space_Mono'] flex items-center gap-1.5">
+                      <span>1. Identificação & Contato</span>
+                    </h3>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-gray-300 uppercase font-['Space_Mono'] mb-1.5">
+                      Nome Completo <span className="text-red-400">*</span>
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      placeholder="Ex: Beatriz Albuquerque Silva"
+                      value={newMemberForm.name}
+                      onChange={e => setNewMemberForm({ ...newMemberForm, name: e.target.value })}
+                      className="w-full bg-gray-950 border border-gray-800 focus:border-emerald-500 text-white p-2.5 text-xs outline-none font-sans"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-gray-300 uppercase font-['Space_Mono'] mb-1.5">
+                      E-mail Institucional ou Principal <span className="text-red-400">*</span>
+                    </label>
+                    <input
+                      type="email"
+                      required
+                      placeholder="Ex: beatriz.silva@ufpe.br"
+                      value={newMemberForm.email}
+                      onChange={e => setNewMemberForm({ ...newMemberForm, email: e.target.value })}
+                      className="w-full bg-gray-950 border border-gray-800 focus:border-emerald-500 text-white p-2.5 text-xs outline-none font-['Space_Mono']"
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-xs font-bold text-gray-300 uppercase font-['Space_Mono'] mb-1.5">
+                        Usuário do Discord
+                      </label>
+                      <input
+                        type="text"
+                        placeholder="Ex: beatriz#1234"
+                        value={newMemberForm.discordUser}
+                        onChange={e => setNewMemberForm({ ...newMemberForm, discordUser: e.target.value })}
+                        className="w-full bg-gray-950 border border-gray-800 focus:border-emerald-500 text-white p-2.5 text-xs outline-none font-['Space_Mono']"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-bold text-gray-300 uppercase font-['Space_Mono'] mb-1.5">
+                        Data de Nascimento
+                      </label>
+                      <input
+                        type="date"
+                        value={newMemberForm.birthday}
+                        onChange={e => setNewMemberForm({ ...newMemberForm, birthday: e.target.value })}
+                        className="w-full bg-gray-950 border border-gray-800 focus:border-emerald-500 text-white p-2.5 text-xs outline-none font-['Space_Mono']"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="pb-2 pt-3 border-b border-gray-800">
+                    <h3 className="text-xs font-bold uppercase tracking-wider text-emerald-400 font-['Space_Mono'] flex items-center gap-1.5">
+                      <span>2. Dados Acadêmicos</span>
+                    </h3>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-xs font-bold text-gray-300 uppercase font-['Space_Mono'] mb-1.5">
+                        Curso de Graduação <span className="text-red-400">*</span>
+                      </label>
+                      <input
+                        type="text"
+                        required
+                        list="courses-list"
+                        placeholder="Ex: Ciência da Computação"
+                        value={newMemberForm.course}
+                        onChange={e => setNewMemberForm({ ...newMemberForm, course: e.target.value })}
+                        className="w-full bg-gray-950 border border-gray-800 focus:border-emerald-500 text-white p-2.5 text-xs outline-none"
+                      />
+                      <datalist id="courses-list">
+                        <option value="Ciência da Computação" />
+                        <option value="Design" />
+                        <option value="Engenharia da Computação" />
+                        <option value="Sistemas de Informação" />
+                        <option value="Cinema e Audiovisual" />
+                        <option value="Música" />
+                        <option value="Administração" />
+                        <option value="Outro" />
+                      </datalist>
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-bold text-gray-300 uppercase font-['Space_Mono'] mb-1.5">
+                        Período Atual
+                      </label>
+                      <select
+                        value={newMemberForm.period}
+                        onChange={e => setNewMemberForm({ ...newMemberForm, period: e.target.value })}
+                        className="w-full bg-gray-950 border border-gray-800 focus:border-emerald-500 text-white p-2.5 text-xs outline-none cursor-pointer font-['Space_Mono']"
+                      >
+                        <option value="1º período">1º período</option>
+                        <option value="2º período">2º período</option>
+                        <option value="3º período">3º período</option>
+                        <option value="4º período">4º período</option>
+                        <option value="5º período">5º período</option>
+                        <option value="6º período">6º período</option>
+                        <option value="7º período">7º período</option>
+                        <option value="8º período">8º período</option>
+                        <option value="9º período">9º período</option>
+                        <option value="10º período">10º período</option>
+                        <option value="Pós-Graduação">Pós-Graduação</option>
+                        <option value="Graduado">Graduado</option>
+                      </select>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Coluna 2: Atuação na LAJE & Alocação */}
+                <div className="space-y-4">
+                  <div className="pb-2 border-b border-gray-800">
+                    <h3 className="text-xs font-bold uppercase tracking-wider text-emerald-400 font-['Space_Mono'] flex items-center gap-1.5">
+                      <span>3. Atuação na Liga LAJE</span>
+                    </h3>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-gray-300 uppercase font-['Space_Mono'] mb-1.5">
+                      Função(ões) / Área(s) na Liga <span className="text-red-400">*</span>
+                    </label>
+                    <div className="flex flex-wrap gap-1.5 mb-2">
+                      {['Programação', 'Arte', 'Game Design', 'Som', 'Produção', 'Marketing', 'RH'].map(r => {
+                        const currentRoles = (newMemberForm.leagueRole || '').split(',').map(s => s.trim()).filter(Boolean);
+                        const isSelected = currentRoles.includes(r);
+                        return (
+                          <button
+                            key={r}
+                            type="button"
+                            onClick={() => {
+                              let next: string[];
+                              if (isSelected) {
+                                next = currentRoles.filter(role => role !== r);
+                              } else {
+                                next = [...currentRoles, r];
+                              }
+                              setNewMemberForm({
+                                ...newMemberForm,
+                                leagueRole: next.join(', ') || r
+                              });
+                            }}
+                            className={`px-2.5 py-1 text-xs font-['Space_Mono'] border transition-colors cursor-pointer ${
+                              isSelected
+                                ? 'bg-emerald-500 text-gray-950 font-bold border-emerald-400'
+                                : 'bg-gray-900 border-gray-700 text-gray-300 hover:border-gray-500'
+                            }`}
+                          >
+                            {isSelected ? `✓ ${r}` : `+ ${r}`}
+                          </button>
+                        );
+                      })}
+                    </div>
+                    <input
+                      type="text"
+                      required
+                      placeholder="Ex: Programação, Arte"
+                      value={newMemberForm.leagueRole}
+                      onChange={e => setNewMemberForm({ ...newMemberForm, leagueRole: e.target.value })}
+                      className="w-full bg-gray-950 border border-gray-800 focus:border-emerald-500 text-white p-2.5 text-xs outline-none font-['Space_Mono']"
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-3 gap-3">
+                    <div>
+                      <label className="block text-[11px] font-bold text-gray-300 uppercase font-['Space_Mono'] mb-1.5">
+                        Dedicação
+                      </label>
+                      <select
+                        value={newMemberForm.weeklyHours}
+                        onChange={e => setNewMemberForm({ ...newMemberForm, weeklyHours: e.target.value })}
+                        className="w-full bg-gray-950 border border-gray-800 focus:border-emerald-500 text-white p-2.5 text-xs outline-none font-['Space_Mono']"
+                      >
+                        <option value="2h">2h</option>
+                        <option value="4h">4h</option>
+                        <option value="6h">6h</option>
+                        <option value="8h">8h</option>
+                        <option value="10h+">10h+</option>
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block text-[11px] font-bold text-gray-300 uppercase font-['Space_Mono'] mb-1.5">
+                        Prioridade
+                      </label>
+                      <select
+                        value={newMemberForm.priority}
+                        onChange={e => setNewMemberForm({ ...newMemberForm, priority: e.target.value })}
+                        className="w-full bg-gray-950 border border-gray-800 focus:border-emerald-500 text-white p-2.5 text-xs outline-none font-['Space_Mono']"
+                      >
+                        <option value="Baixa">Baixa</option>
+                        <option value="Média">Média</option>
+                        <option value="Alta">Alta</option>
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block text-[11px] font-bold text-gray-300 uppercase font-['Space_Mono'] mb-1.5">
+                        Status
+                      </label>
+                      <select
+                        value={newMemberForm.status}
+                        onChange={e => setNewMemberForm({ ...newMemberForm, status: e.target.value as any })}
+                        className="w-full bg-gray-950 border border-gray-800 focus:border-emerald-500 text-white p-2.5 text-xs outline-none font-['Space_Mono']"
+                      >
+                        <option value="Ativo">Ativo</option>
+                        <option value="Ex-membro">Ex-membro</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <div className="pb-2 pt-3 border-b border-gray-800">
+                    <h3 className="text-xs font-bold uppercase tracking-wider text-emerald-400 font-['Space_Mono'] flex items-center gap-1.5">
+                      <span>4. Alocação em Projetos</span>
+                    </h3>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-xs font-bold text-gray-300 uppercase font-['Space_Mono'] mb-1.5">
+                        Alocado em Projeto?
+                      </label>
+                      <select
+                        value={newMemberForm.isInProject}
+                        onChange={e => setNewMemberForm({ ...newMemberForm, isInProject: e.target.value })}
+                        className="w-full bg-gray-950 border border-gray-800 focus:border-emerald-500 text-white p-2.5 text-xs outline-none font-['Space_Mono']"
+                      >
+                        <option value="Sim">Sim, alocado</option>
+                        <option value="Não">Não alocado</option>
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-bold text-gray-300 uppercase font-['Space_Mono'] mb-1.5">
+                        {newMemberForm.isInProject === 'Sim' ? 'Projeto(s) Atual(is)' : 'Situação sem Projeto'}
+                      </label>
+                      {newMemberForm.isInProject === 'Sim' ? (
+                        <>
+                          <input
+                            type="text"
+                            list="active-projects-list"
+                            placeholder="Ex: Chrono Echoes, Pixel Quest"
+                            value={newMemberForm.currentProjects}
+                            onChange={e => setNewMemberForm({ ...newMemberForm, currentProjects: e.target.value })}
+                            className="w-full bg-gray-950 border border-gray-800 focus:border-emerald-500 text-white p-2.5 text-xs outline-none"
+                          />
+                          <datalist id="active-projects-list">
+                            {distinctProjects.map(p => (
+                              <option key={p} value={p} />
+                            ))}
+                          </datalist>
+                        </>
+                      ) : (
+                        <select
+                          value={newMemberForm.notInProjectStatus}
+                          onChange={e => setNewMemberForm({ ...newMemberForm, notInProjectStatus: e.target.value })}
+                          className="w-full bg-gray-950 border border-gray-800 focus:border-emerald-500 text-white p-2.5 text-xs outline-none"
+                        >
+                          <option value="Quero entrar em um projeto e estou procurando">Quero entrar em um projeto e estou procurando</option>
+                          <option value="Já tentei entrar em um projeto, mas não consegui">Já tentei entrar em um projeto, mas não consegui</option>
+                          <option value="Só quero acompanhar por curiosidade ou aprendizado">Só quero acompanhar por curiosidade ou aprendizado</option>
+                        </select>
+                      )}
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-gray-300 uppercase font-['Space_Mono'] mb-1.5">
+                      Projetos de Interesse (Opcional)
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="Ex: Projetos 2D, Roguelike, Unity, Unreal"
+                      value={newMemberForm.interestedProjects}
+                      onChange={e => setNewMemberForm({ ...newMemberForm, interestedProjects: e.target.value })}
+                      className="w-full bg-gray-950 border border-gray-800 focus:border-emerald-500 text-white p-2.5 text-xs outline-none"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* Foco e Aprendizado */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2 border-t border-gray-800">
+                <div>
+                  <label className="block text-xs font-bold text-gray-300 uppercase font-['Space_Mono'] mb-1.5">
+                    Foco na Função Atual
+                  </label>
+                  <textarea
+                    rows={2}
+                    placeholder="Descreva as principais responsabilidades ou tarefas que este membro irá assumir..."
+                    value={newMemberForm.roleFocus}
+                    onChange={e => setNewMemberForm({ ...newMemberForm, roleFocus: e.target.value })}
+                    className="w-full bg-gray-950 border border-gray-800 focus:border-emerald-500 text-white p-2.5 text-xs outline-none resize-none"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-gray-300 uppercase font-['Space_Mono'] mb-1.5">
+                    Foco de Aprendizado
+                  </label>
+                  <textarea
+                    rows={2}
+                    placeholder="Ferramentas, linguagens ou habilidades que o membro deseja aprimorar..."
+                    value={newMemberForm.learningFocus}
+                    onChange={e => setNewMemberForm({ ...newMemberForm, learningFocus: e.target.value })}
+                    className="w-full bg-gray-950 border border-gray-800 focus:border-emerald-500 text-white p-2.5 text-xs outline-none resize-none"
+                  />
+                </div>
+              </div>
+
+              {/* Modal Footer */}
+              <div className="flex items-center justify-between pt-4 border-t border-gray-800 gap-3">
+                <span className="text-[11px] text-gray-500 font-['Space_Mono'] hidden sm:inline">
+                  Campos com <span className="text-red-400">*</span> são obrigatórios.
+                </span>
+                <div className="flex items-center gap-3 ml-auto">
+                  <button
+                    type="button"
+                    disabled={isAddingMember}
+                    onClick={() => setIsAddMemberOpen(false)}
+                    className="px-5 py-2.5 bg-gray-800 hover:bg-gray-700 text-gray-300 font-medium text-xs uppercase tracking-wider font-['Space_Mono'] transition-colors cursor-pointer"
+                  >
+                    Cancelar
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={isAddingMember}
+                    className="flex items-center gap-2 px-6 py-2.5 bg-emerald-500 hover:bg-emerald-400 text-gray-950 font-bold text-xs uppercase tracking-wider font-['Space_Mono'] transition-colors cursor-pointer disabled:opacity-50 shadow-[0_0_20px_rgba(16,185,129,0.3)]"
+                  >
+                    {isAddingMember ? <Loader2 className="animate-spin" size={15} /> : <UserPlus size={15} />}
+                    Cadastrar Membro na Equipe
+                  </button>
+                </div>
+              </div>
+            </form>
           </div>
         </div>
       )}

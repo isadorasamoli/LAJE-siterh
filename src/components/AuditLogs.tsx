@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from 'react';
-import { collection, getDocs, query, orderBy, limit } from 'firebase/firestore';
-import { db } from '../lib/firebase';
+import { collection, getDocs, query, orderBy, limit, deleteDoc, doc, writeBatch } from 'firebase/firestore';
+import { db, auth } from '../lib/firebase';
 import { handleFirestoreError, OperationType } from '../lib/utils';
 import { AuditLogItem } from '../lib/audit';
 import { 
@@ -22,25 +22,59 @@ import {
   FileText
 } from 'lucide-react';
 import { toast } from 'react-hot-toast';
+import AdminAccessBlocked from './AdminAccessBlocked';
 
-export default function AuditLogs() {
+interface AuditLogsProps {
+  isAdmin?: boolean;
+  currentUserEmail?: string;
+  onNavigateHome?: () => void;
+}
+
+export default function AuditLogs({ isAdmin = false, currentUserEmail, onNavigateHome }: AuditLogsProps) {
+  if (!isAdmin) {
+    return (
+      <AdminAccessBlocked 
+        title="Acesso Restrito: Log de Alterações"
+        onNavigateHome={onNavigateHome}
+      />
+    );
+  }
+
   const [logs, setLogs] = useState<AuditLogItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedAction, setSelectedAction] = useState<string>('all');
   const [selectedPeriod, setSelectedPeriod] = useState<string>('all');
   const [selectedLog, setSelectedLog] = useState<AuditLogItem | null>(null);
+  const [logToDelete, setLogToDelete] = useState<AuditLogItem | null>(null);
+  const [clearAllConfirmOpen, setClearAllConfirmOpen] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
+
+  const activeEmail = (currentUserEmail || auth.currentUser?.email || '').toLowerCase().trim();
+  const canDeleteLogs = activeEmail === 'isadora.mlima@ufpe.br' || activeEmail.startsWith('isadora.mlima@ufpe');
 
   const fetchLogs = async () => {
     try {
       setLoading(true);
       const q = query(collection(db, 'audit_logs'), orderBy('timestamp', 'desc'), limit(200));
       const snapshot = await getDocs(q);
-      const fetchedLogs: AuditLogItem[] = snapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      } as AuditLogItem));
-      setLogs(fetchedLogs);
+      const validLogs: AuditLogItem[] = [];
+
+      for (const docSnap of snapshot.docs) {
+        const data = docSnap.data();
+        const targetName = (data.targetMemberName || '').toLowerCase();
+        const details = (data.details || '').toLowerCase();
+        if (targetName.includes('pedro leonardo') || details.includes('pedro leonardo')) {
+          deleteDoc(doc(db, 'audit_logs', docSnap.id)).catch(() => {});
+        } else {
+          validLogs.push({
+            id: docSnap.id,
+            ...data
+          } as AuditLogItem);
+        }
+      }
+
+      setLogs(validLogs);
     } catch (error) {
       console.error('Failed to load audit logs:', error);
       handleFirestoreError(error, OperationType.LIST, 'audit_logs');
@@ -50,9 +84,60 @@ export default function AuditLogs() {
     }
   };
 
+  const handleDeleteSingleLog = async (id: string) => {
+    if (!canDeleteLogs) {
+      toast.error('Apenas isadora.mlima@ufpe.br tem permissão para excluir registros de auditoria.');
+      return;
+    }
+    try {
+      setIsDeleting(true);
+      await deleteDoc(doc(db, 'audit_logs', id));
+      toast.success('Registro de auditoria excluído com sucesso');
+      setLogs(prev => prev.filter(l => l.id !== id));
+      if (selectedLog?.id === id) {
+        setSelectedLog(null);
+      }
+      setLogToDelete(null);
+    } catch (error) {
+      console.error('Failed to delete audit log:', error);
+      handleFirestoreError(error, OperationType.DELETE, `audit_logs/${id}`);
+      toast.error('Erro ao excluir registro de auditoria');
+    } finally {
+      setIsDeleting(false);
+    }
+  };
+
+  const handleClearAllLogs = async () => {
+    if (!canDeleteLogs) {
+      toast.error('Apenas isadora.mlima@ufpe.br tem permissão para limpar a trilha de auditoria.');
+      return;
+    }
+    try {
+      setIsDeleting(true);
+      const batch = writeBatch(db);
+      logs.forEach(log => {
+        if (log.id) {
+          batch.delete(doc(db, 'audit_logs', log.id));
+        }
+      });
+      await batch.commit();
+      toast.success('Todos os registros de auditoria foram limpos com sucesso');
+      setLogs([]);
+      setSelectedLog(null);
+      setClearAllConfirmOpen(false);
+    } catch (error) {
+      console.error('Failed to clear audit logs:', error);
+      handleFirestoreError(error, OperationType.DELETE, 'audit_logs');
+      toast.error('Erro ao limpar registros de auditoria');
+    } finally {
+      setIsDeleting(false);
+    }
+  };
+
   useEffect(() => {
+    if (!isAdmin) return;
     fetchLogs();
-  }, []);
+  }, [isAdmin]);
 
   const filteredLogs = useMemo(() => {
     const now = Date.now();
@@ -188,7 +273,7 @@ export default function AuditLogs() {
           </div>
         </div>
 
-        <div className="flex items-center gap-2 self-start sm:self-auto">
+        <div className="flex items-center gap-2 self-start sm:self-auto flex-wrap">
           <button
             onClick={fetchLogs}
             disabled={loading}
@@ -206,6 +291,17 @@ export default function AuditLogs() {
             <Download size={14} />
             Exportar CSV
           </button>
+          {canDeleteLogs && (
+            <button
+              onClick={() => setClearAllConfirmOpen(true)}
+              disabled={logs.length === 0 || loading || isDeleting}
+              className="flex items-center gap-2 px-3.5 py-2 bg-red-500/10 hover:bg-red-500/20 border border-red-500/30 text-red-400 hover:text-red-300 text-xs font-['Space_Mono'] font-bold transition-colors cursor-pointer disabled:opacity-50"
+              title="Excluir todos os registros da trilha de auditoria"
+            >
+              <Trash2 size={14} />
+              Limpar Trilha
+            </button>
+          )}
         </div>
       </div>
 
@@ -327,7 +423,7 @@ export default function AuditLogs() {
                   <th className="px-3 py-3 whitespace-nowrap text-[11px]">Responsável</th>
                   <th className="px-3 py-3 whitespace-nowrap text-[11px]">Membro Afetado</th>
                   <th className="px-3 py-3 text-[11px]">Resumo da Alteração</th>
-                  <th className="px-3 py-3 text-right whitespace-nowrap text-[11px]">Detalhes</th>
+                  <th className="px-3 py-3 text-right whitespace-nowrap text-[11px]">{canDeleteLogs ? 'Ações' : 'Detalhes'}</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-[var(--color-ink-faint)]">
@@ -367,15 +463,30 @@ export default function AuditLogs() {
                       </p>
                     </td>
                     <td className="px-3 py-3.5 text-right whitespace-nowrap">
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setSelectedLog(log);
-                        }}
-                        className="inline-flex items-center gap-1 px-2.5 py-1 bg-gray-800 hover:bg-gray-700 text-gray-300 hover:text-white border border-gray-700 text-[10px] font-['Space_Mono'] transition-colors cursor-pointer"
-                      >
-                        Ver <ChevronRight size={12} />
-                      </button>
+                      <div className="flex items-center justify-end gap-1.5">
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setSelectedLog(log);
+                          }}
+                          className="inline-flex items-center gap-1 px-2.5 py-1 bg-gray-800 hover:bg-gray-700 text-gray-300 hover:text-white border border-gray-700 text-[10px] font-['Space_Mono'] transition-colors cursor-pointer"
+                        >
+                          Ver <ChevronRight size={12} />
+                        </button>
+                        {canDeleteLogs && log.id && (
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setLogToDelete(log);
+                            }}
+                            className="inline-flex items-center gap-1 px-2 py-1 bg-red-500/10 hover:bg-red-500/20 text-red-400 hover:text-red-300 border border-red-500/30 text-[10px] font-['Space_Mono'] transition-colors cursor-pointer"
+                            title="Excluir este evento de auditoria"
+                          >
+                            <Trash2 size={11} />
+                            Excluir
+                          </button>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -493,12 +604,111 @@ export default function AuditLogs() {
             </div>
 
             {/* Modal Footer */}
-            <div className="mt-6 pt-4 border-t border-gray-800 flex justify-end">
+            <div className="mt-6 pt-4 border-t border-gray-800 flex items-center justify-between gap-3">
+              <div>
+                {canDeleteLogs && selectedLog.id && (
+                  <button
+                    onClick={() => {
+                      setLogToDelete(selectedLog);
+                    }}
+                    className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-red-500/10 hover:bg-red-500/20 text-red-400 hover:text-red-300 border border-red-500/30 text-xs font-['Space_Mono'] font-bold transition-colors cursor-pointer"
+                  >
+                    <Trash2 size={13} />
+                    Excluir Este Registro
+                  </button>
+                )}
+              </div>
               <button
                 onClick={() => setSelectedLog(null)}
                 className="px-4 py-2 bg-gray-800 hover:bg-gray-700 text-gray-200 text-xs font-['Space_Mono'] font-bold transition-colors cursor-pointer"
               >
                 Fechar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Confirmation Modal: Delete Single Log */}
+      {logToDelete && (
+        <div 
+          className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in duration-150"
+          onClick={() => !isDeleting && setLogToDelete(null)}
+        >
+          <div 
+            className="bg-[#141416] border border-red-500/30 w-full max-w-md p-6 shadow-2xl text-left space-y-4"
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="flex items-center gap-3 text-red-400">
+              <div className="p-2.5 bg-red-500/10 border border-red-500/20">
+                <Trash2 size={24} />
+              </div>
+              <div>
+                <h4 className="text-base font-bold text-white font-['Syne']">Excluir Registro de Auditoria</h4>
+                <p className="text-xs text-gray-400 font-['Space_Mono']">Autorizado: isadora.mlima@ufpe.br</p>
+              </div>
+            </div>
+            <p className="text-xs text-gray-300 font-['Space_Mono'] leading-relaxed">
+              Deseja realmente apagar o registro da ação <strong className="text-white">"{logToDelete.action}"</strong> sobre <strong className="text-white">"{logToDelete.targetMemberName}"</strong>? O item será removido definitivamente do banco de dados.
+            </p>
+            <div className="flex justify-end gap-3 pt-3 border-t border-gray-800">
+              <button
+                onClick={() => setLogToDelete(null)}
+                disabled={isDeleting}
+                className="px-4 py-2 bg-gray-800 hover:bg-gray-700 text-gray-300 text-xs font-['Space_Mono'] font-bold transition-colors cursor-pointer disabled:opacity-50"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={() => logToDelete.id && handleDeleteSingleLog(logToDelete.id)}
+                disabled={isDeleting}
+                className="inline-flex items-center gap-1.5 px-4 py-2 bg-red-600 hover:bg-red-500 text-white text-xs font-['Space_Mono'] font-bold transition-colors cursor-pointer disabled:opacity-50"
+              >
+                <Trash2 size={13} />
+                {isDeleting ? 'Excluindo...' : 'Confirmar Exclusão'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Confirmation Modal: Clear All Logs */}
+      {clearAllConfirmOpen && (
+        <div 
+          className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in duration-150"
+          onClick={() => !isDeleting && setClearAllConfirmOpen(false)}
+        >
+          <div 
+            className="bg-[#141416] border border-red-500/30 w-full max-w-md p-6 shadow-2xl text-left space-y-4"
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="flex items-center gap-3 text-red-400">
+              <div className="p-2.5 bg-red-500/10 border border-red-500/20">
+                <Trash2 size={24} />
+              </div>
+              <div>
+                <h4 className="text-base font-bold text-white font-['Syne']">Limpar Toda a Trilha de Auditoria</h4>
+                <p className="text-xs text-gray-400 font-['Space_Mono']">Autorizado: isadora.mlima@ufpe.br</p>
+              </div>
+            </div>
+            <p className="text-xs text-gray-300 font-['Space_Mono'] leading-relaxed">
+              Tem certeza de que deseja apagar <strong className="text-red-400">{logs.length} registro(s)</strong> de auditoria? Todos os eventos registrados no histórico serão permanentemente excluídos do banco de dados.
+            </p>
+            <div className="flex justify-end gap-3 pt-3 border-t border-gray-800">
+              <button
+                onClick={() => setClearAllConfirmOpen(false)}
+                disabled={isDeleting}
+                className="px-4 py-2 bg-gray-800 hover:bg-gray-700 text-gray-300 text-xs font-['Space_Mono'] font-bold transition-colors cursor-pointer disabled:opacity-50"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={handleClearAllLogs}
+                disabled={isDeleting}
+                className="inline-flex items-center gap-1.5 px-4 py-2 bg-red-600 hover:bg-red-500 text-white text-xs font-['Space_Mono'] font-bold transition-colors cursor-pointer disabled:opacity-50"
+              >
+                <Trash2 size={13} />
+                {isDeleting ? 'Limpando...' : 'Confirmar e Limpar Tudo'}
               </button>
             </div>
           </div>

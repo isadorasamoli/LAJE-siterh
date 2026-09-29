@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, FormEvent } from 'react';
+import { useState, useEffect, useMemo, FormEvent, MouseEvent } from 'react';
 import { 
   collection, 
   getDocs, 
@@ -7,6 +7,7 @@ import {
   deleteDoc,
   doc, 
   query, 
+  where,
   orderBy 
 } from 'firebase/firestore';
 import { db, auth } from '../lib/firebase';
@@ -48,23 +49,90 @@ import {
   MessageSquare,
   Trash2,
   FolderPlus,
-  Mail
+  Mail,
+  Edit2
 } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 
 interface ProjectsHubProps {
   isAdmin?: boolean;
+  isSuperAdmin?: boolean;
+  isRH?: boolean;
   currentUserEmail?: string;
   currentUserName?: string;
+  currentUserRole?: string;
   token?: string;
 }
 
 export default function ProjectsHub({ 
   isAdmin = false, 
+  isSuperAdmin: propIsSuperAdmin,
+  isRH: propIsRH,
   currentUserEmail = '', 
   currentUserName = '',
+  currentUserRole = '',
   token = ''
 }: ProjectsHubProps) {
+  const activeEmail = (currentUserEmail || auth.currentUser?.email || '').toLowerCase().trim();
+  const isSuperAdminEmail = Boolean(
+    propIsSuperAdmin ||
+    activeEmail === 'isadora.mlima@ufpe.br' ||
+    activeEmail.startsWith('isadora.mlima@ufpe') ||
+    activeEmail === 'isadorasdml@gmail.com'
+  );
+  const [isRHMember, setIsRHMember] = useState(Boolean(propIsRH || isSuperAdminEmail));
+
+  useEffect(() => {
+    const checkRH = async () => {
+      if (isSuperAdminEmail || propIsRH) {
+        setIsRHMember(true);
+        return;
+      }
+      if (currentUserRole && (currentUserRole.toLowerCase().includes('rh') || currentUserRole.toLowerCase().includes('recursos humanos'))) {
+        setIsRHMember(true);
+        return;
+      }
+      try {
+        const user = auth.currentUser;
+        if (user) {
+          const q1 = query(collection(db, 'responses'), where('userId', '==', user.uid));
+          const snap1 = await getDocs(q1);
+          if (!snap1.empty) {
+            const r = (snap1.docs[0].data().leagueRole || '').toLowerCase();
+            if (r.includes('rh') || r.includes('recursos humanos')) {
+              setIsRHMember(true);
+              return;
+            }
+          }
+        }
+        if (activeEmail) {
+          const q2 = query(collection(db, 'responses'), where('email', '==', activeEmail));
+          const snap2 = await getDocs(q2);
+          if (!snap2.empty) {
+            const r = (snap2.docs[0].data().leagueRole || '').toLowerCase();
+            if (r.includes('rh') || r.includes('recursos humanos')) {
+              setIsRHMember(true);
+              return;
+            }
+          }
+          // Also check admins collection for Membro RH or Super Admin
+          const adminQ = query(collection(db, 'admins'), where('email', '==', activeEmail));
+          const adminSnap = await getDocs(adminQ);
+          if (!adminSnap.empty) {
+            setIsRHMember(true);
+            return;
+          }
+        }
+      } catch (e) {
+        console.error('Error checking RH membership:', e);
+      }
+    };
+    checkRH();
+  }, [activeEmail, currentUserRole, isSuperAdminEmail, propIsRH]);
+
+  // Membros do RH, Super Admin e Administradores podem gerenciar e editar jogos e adicionar membros via filtro
+  const canEditGames = isAdmin || isSuperAdminEmail || isRHMember || Boolean(currentUserRole && (currentUserRole.toLowerCase().includes('rh') || currentUserRole.toLowerCase().includes('recursos humanos')));
+
   const [activeSubTab, setActiveSubTab] = useState<'projetos' | 'vagas' | 'mural' | 'proposta'>('projetos');
   const [loading, setLoading] = useState(true);
 
@@ -78,8 +146,29 @@ export default function ProjectsHub({
   const [selectedProposal, setSelectedProposal] = useState<ProposalItem | null>(null);
 
   const [isNewProjectModalOpen, setIsNewProjectModalOpen] = useState(false);
+  const [isEditProjectModalOpen, setIsEditProjectModalOpen] = useState(false);
+  const [editingProject, setEditingProject] = useState<ProjectItem | null>(null);
+  const [isSavingProjectEdit, setIsSavingProjectEdit] = useState(false);
   const [isNewOpeningModalOpen, setIsNewOpeningModalOpen] = useState(false);
   const [isNewTaskModalOpen, setIsNewTaskModalOpen] = useState(false);
+
+  const [editProjectForm, setEditProjectForm] = useState({
+    name: '',
+    status: 'em produção' as ProjectItem['status'],
+    engine: 'Godot',
+    genre: '',
+    leader: '',
+    leaderDiscord: '',
+    responsibleDirector: 'Diretoria de Projetos',
+    semester: '2026.2',
+    description: '',
+    elevatorPitch: '',
+    diferencial: '',
+    pilares: '',
+    targetScope: 'Protótipo jogável neste semestre',
+    teamMembers: '',
+    coverEmoji: '🎮'
+  });
 
   const [newProjectForm, setNewProjectForm] = useState({
     name: '',
@@ -100,6 +189,119 @@ export default function ProjectsHub({
     notifyMembers: true
   });
   const [isSubmittingProject, setIsSubmittingProject] = useState(false);
+
+  // Membros cadastrados na base do RH para adicionar via filtro do Dashboard
+  const [registeredMembers, setRegisteredMembers] = useState<any[]>([]);
+  const [isMemberFilterOpen, setIsMemberFilterOpen] = useState(false);
+  const [memberSearchQuery, setMemberSearchQuery] = useState('');
+  const [memberRoleFilter, setMemberRoleFilter] = useState('all');
+  const [memberProjectFilter, setMemberProjectFilter] = useState<'all' | 'available' | 'in_project'>('all');
+  const [memberCourseFilter, setMemberCourseFilter] = useState('all');
+
+  const [isEditMemberFilterOpen, setIsEditMemberFilterOpen] = useState(false);
+  const [editMemberSearchQuery, setEditMemberSearchQuery] = useState('');
+  const [editMemberRoleFilter, setEditMemberRoleFilter] = useState('all');
+  const [editMemberProjectFilter, setEditMemberProjectFilter] = useState<'all' | 'available' | 'in_project'>('all');
+  const [editMemberCourseFilter, setEditMemberCourseFilter] = useState('all');
+
+  useEffect(() => {
+    const fetchRegisteredMembers = async () => {
+      try {
+        const snap = await getDocs(collection(db, 'responses'));
+        const list = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        list.sort((a: any, b: any) => (a.name || '').localeCompare(b.name || ''));
+        setRegisteredMembers(list);
+      } catch (err) {
+        console.error('Erro ao carregar membros para filtro:', err);
+      }
+    };
+    fetchRegisteredMembers();
+  }, []);
+
+  const distinctMemberRoles = useMemo(() => {
+    const set = new Set<string>();
+    registeredMembers.forEach(m => {
+      if (m.leagueRole) {
+        String(m.leagueRole).split(',').forEach(r => {
+          const trimmed = r.trim();
+          if (trimmed) set.add(trimmed);
+        });
+      }
+    });
+    return Array.from(set).sort();
+  }, [registeredMembers]);
+
+  const distinctMemberCourses = useMemo(() => {
+    const set = new Set<string>();
+    registeredMembers.forEach(m => {
+      if (m.course && m.course.trim()) {
+        set.add(m.course.trim());
+      }
+    });
+    return Array.from(set).sort();
+  }, [registeredMembers]);
+
+  const handleToggleTeamMemberNew = (member: any) => {
+    const memberName = (member.name || 'Membro').trim();
+    const primaryRole = member.leagueRole ? String(member.leagueRole).split(',')[0].trim() : '';
+    const formatted = primaryRole ? `${memberName} (${primaryRole})` : memberName;
+
+    const currentList = (newProjectForm.teamMembers || '')
+      .split(',')
+      .map(s => s.trim())
+      .filter(Boolean);
+
+    const isAlreadyIn = currentList.some(item => 
+      item.toLowerCase().includes(memberName.toLowerCase()) || memberName.toLowerCase().includes(item.toLowerCase())
+    );
+
+    let updated: string[];
+    if (isAlreadyIn) {
+      updated = currentList.filter(item => 
+        !item.toLowerCase().includes(memberName.toLowerCase()) && !memberName.toLowerCase().includes(item.toLowerCase())
+      );
+      toast.success(`"${memberName}" removido(a) da equipe`);
+    } else {
+      updated = [...currentList, formatted];
+      toast.success(`"${memberName}" adicionado(a) à equipe!`);
+    }
+
+    setNewProjectForm(prev => ({
+      ...prev,
+      teamMembers: updated.join(', ')
+    }));
+  };
+
+  const handleToggleTeamMemberEdit = (member: any) => {
+    const memberName = (member.name || 'Membro').trim();
+    const primaryRole = member.leagueRole ? String(member.leagueRole).split(',')[0].trim() : '';
+    const formatted = primaryRole ? `${memberName} (${primaryRole})` : memberName;
+
+    const currentList = (editProjectForm.teamMembers || '')
+      .split(',')
+      .map(s => s.trim())
+      .filter(Boolean);
+
+    const isAlreadyIn = currentList.some(item => 
+      item.toLowerCase().includes(memberName.toLowerCase()) || memberName.toLowerCase().includes(item.toLowerCase())
+    );
+
+    let updated: string[];
+    if (isAlreadyIn) {
+      updated = currentList.filter(item => 
+        !item.toLowerCase().includes(memberName.toLowerCase()) && !memberName.toLowerCase().includes(item.toLowerCase())
+      );
+      toast.success(`"${memberName}" removido(a) da equipe`);
+    } else {
+      updated = [...currentList, formatted];
+      toast.success(`"${memberName}" adicionado(a) à equipe!`);
+    }
+
+    setEditProjectForm(prev => ({
+      ...prev,
+      teamMembers: updated.join(', ')
+    }));
+  };
 
   const [newOpeningForm, setNewOpeningForm] = useState({
     projectId: '',
@@ -123,6 +325,7 @@ export default function ProjectsHub({
   const [isSubmittingTask, setIsSubmittingTask] = useState(false);
 
   const [projectSearch, setProjectSearch] = useState('');
+  const [projectStatusFilter, setProjectStatusFilter] = useState('all');
   const [taskAreaFilter, setTaskAreaFilter] = useState('all');
   const [taskOnlyBeginners, setTaskOnlyBeginners] = useState(false);
   const [openingProjectFilter, setOpeningProjectFilter] = useState('all');
@@ -275,6 +478,89 @@ export default function ProjectsHub({
       toast.error('Erro ao cadastrar projeto');
     } finally {
       setIsSubmittingProject(false);
+    }
+  };
+
+  const handleOpenEditProject = (p: ProjectItem, e?: MouseEvent) => {
+    if (e) e.stopPropagation();
+    setEditingProject(p);
+    setEditProjectForm({
+      name: p.name || '',
+      status: p.status || 'em produção',
+      engine: p.engine || 'Godot',
+      genre: p.genre || '',
+      leader: p.leader || '',
+      leaderDiscord: p.leaderDiscord || '',
+      responsibleDirector: p.responsibleDirector || 'Diretoria de Projetos',
+      semester: p.semester || '2026.2',
+      description: p.description || '',
+      elevatorPitch: p.elevatorPitch || p.description || '',
+      diferencial: p.diferencial || '',
+      pilares: p.pilares || '',
+      targetScope: p.targetScope || 'Protótipo jogável neste semestre',
+      teamMembers: p.teamMembers || '',
+      coverEmoji: p.coverEmoji || '🎮'
+    });
+    setIsEditProjectModalOpen(true);
+  };
+
+  const handleSaveEditProject = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!editingProject?.id) return;
+    if (!editProjectForm.name.trim() || !editProjectForm.leader.trim()) {
+      toast.error('Informe ao menos o nome do jogo e o líder');
+      return;
+    }
+    try {
+      setIsSavingProjectEdit(true);
+      const updateData: Partial<ProjectItem> = {
+        name: editProjectForm.name.trim(),
+        status: editProjectForm.status,
+        engine: editProjectForm.engine || 'Godot',
+        genre: editProjectForm.genre.trim() || 'Gênero indefinido',
+        leader: editProjectForm.leader.trim(),
+        leaderDiscord: editProjectForm.leaderDiscord.trim(),
+        responsibleDirector: editProjectForm.responsibleDirector.trim() || 'Diretoria de Projetos',
+        semester: editProjectForm.semester.trim() || '2026.2',
+        description: editProjectForm.description.trim() || editProjectForm.elevatorPitch.trim() || 'Sem descrição cadastrada.',
+        elevatorPitch: editProjectForm.elevatorPitch.trim() || editProjectForm.description.trim(),
+        diferencial: editProjectForm.diferencial.trim(),
+        pilares: editProjectForm.pilares.trim(),
+        targetScope: editProjectForm.targetScope.trim() || 'Protótipo jogável neste semestre',
+        teamMembers: editProjectForm.teamMembers.trim() || editProjectForm.leader.trim(),
+        coverEmoji: editProjectForm.coverEmoji || '🎮'
+      };
+
+      await updateDoc(doc(db, 'projects', editingProject.id), updateData);
+
+      const mergedProject: ProjectItem = {
+        ...editingProject,
+        ...updateData
+      };
+
+      setProjects(prev => prev.map(p => p.id === editingProject.id ? mergedProject : p));
+      if (selectedProject?.id === editingProject.id) {
+        setSelectedProject(mergedProject);
+      }
+
+      await logAuditAction({
+        action: 'Edição de Jogo',
+        targetMemberName: editProjectForm.name.trim(),
+        details: `Ficha do jogo "${editProjectForm.name.trim()}" atualizada por ${currentUserName || activeEmail}`,
+        previousValue: JSON.stringify(editingProject),
+        newValue: JSON.stringify(mergedProject),
+        performedByEmail: activeEmail,
+        performedByName: currentUserName || 'Membro do Diretório'
+      });
+
+      toast.success(`Jogo "${editProjectForm.name}" atualizado com sucesso!`);
+      setIsEditProjectModalOpen(false);
+      setEditingProject(null);
+    } catch (err) {
+      console.error('Erro ao atualizar dados do jogo:', err);
+      toast.error('Erro ao salvar alterações do jogo');
+    } finally {
+      setIsSavingProjectEdit(false);
     }
   };
 
@@ -480,14 +766,38 @@ export default function ProjectsHub({
   };
 
   const filteredProjects = useMemo(() => {
-    return projects.filter(p => 
-      !projectSearch.trim() ||
-      p.name.toLowerCase().includes(projectSearch.toLowerCase()) ||
-      p.genre.toLowerCase().includes(projectSearch.toLowerCase()) ||
-      p.engine.toLowerCase().includes(projectSearch.toLowerCase()) ||
-      p.leader.toLowerCase().includes(projectSearch.toLowerCase())
-    );
-  }, [projects, projectSearch]);
+    return projects.filter(p => {
+      if (projectStatusFilter !== 'all') {
+        const s = (p.status || '').toLowerCase().trim();
+        if (projectStatusFilter === 'em andamento') {
+          if (!['em andamento', 'andamento', 'em produção', 'em producao', 'desenvolvimento'].includes(s)) return false;
+        } else if (projectStatusFilter === 'concluído') {
+          if (!['concluído', 'concluido', 'finalizado'].includes(s)) return false;
+        } else if (projectStatusFilter === 'pausado') {
+          if (!['pausado', 'em espera'].includes(s)) return false;
+        } else if (projectStatusFilter === 'aprovado') {
+          if (!['aprovado', 'aprovado com escopo menor'].includes(s)) return false;
+        } else if (projectStatusFilter === 'em análise') {
+          if (!['em análise', 'em analise', 'análise'].includes(s)) return false;
+        } else if (projectStatusFilter === 'ideia') {
+          if (!['ideia', 'conceito'].includes(s)) return false;
+        } else if (s !== projectStatusFilter) {
+          return false;
+        }
+      }
+
+      if (!projectSearch.trim()) return true;
+
+      const q = projectSearch.toLowerCase();
+      return (
+        p.name.toLowerCase().includes(q) ||
+        p.genre.toLowerCase().includes(q) ||
+        p.engine.toLowerCase().includes(q) ||
+        p.leader.toLowerCase().includes(q) ||
+        (p.status && p.status.toLowerCase().includes(q))
+      );
+    });
+  }, [projects, projectSearch, projectStatusFilter]);
 
   const filteredTasks = useMemo(() => {
     return tasks.filter(t => {
@@ -654,18 +964,80 @@ export default function ProjectsHub({
   };
 
   const getStatusBadge = (status: string) => {
-    switch (status) {
+    const s = (status || '').toLowerCase().trim();
+    switch (s) {
+      case 'em andamento':
+      case 'andamento':
+      case 'desenvolvimento':
+        return (
+          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-bold font-['Space_Mono'] bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 shadow-[0_0_12px_rgba(16,185,129,0.15)]">
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse shrink-0" />
+            Em Andamento
+          </span>
+        );
       case 'em produção':
-        return <span className="px-2.5 py-0.5 text-xs font-bold font-['Space_Mono'] bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">Em Produção</span>;
+      case 'em producao':
+        return (
+          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-bold font-['Space_Mono'] bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 shadow-[0_0_12px_rgba(16,185,129,0.15)]">
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse shrink-0" />
+            Em Produção
+          </span>
+        );
+      case 'concluído':
+      case 'concluido':
+      case 'finalizado':
+        return (
+          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-bold font-['Space_Mono'] bg-cyan-500/15 text-cyan-300 border border-cyan-500/30 shadow-[0_0_12px_rgba(6,182,212,0.15)]">
+            <CheckCircle2 size={12} className="text-cyan-400 shrink-0" />
+            Concluído
+          </span>
+        );
+      case 'pausado':
+      case 'em espera':
+        return (
+          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-bold font-['Space_Mono'] bg-amber-500/15 text-amber-300 border border-amber-500/30 shadow-[0_0_12px_rgba(245,158,11,0.15)]">
+            <Clock size={12} className="text-amber-400 shrink-0" />
+            Pausado
+          </span>
+        );
       case 'aprovado':
       case 'aprovado com escopo menor':
-        return <span className="px-2.5 py-0.5 text-xs font-bold font-['Space_Mono'] bg-blue-500/20 text-blue-400 border border-blue-500/30">Aprovado</span>;
-      case 'pausado':
-        return <span className="px-2.5 py-0.5 text-xs font-bold font-['Space_Mono'] bg-yellow-500/20 text-yellow-400 border border-yellow-500/30">Pausado</span>;
-      case 'concluído':
-        return <span className="px-2.5 py-0.5 text-xs font-bold font-['Space_Mono'] bg-purple-500/20 text-purple-400 border border-purple-500/30">Concluído</span>;
+        return (
+          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-bold font-['Space_Mono'] bg-teal-500/15 text-teal-300 border border-teal-500/30 shadow-[0_0_12px_rgba(20,184,166,0.15)]">
+            <Check size={12} className="text-teal-400 shrink-0" />
+            Aprovado
+          </span>
+        );
+      case 'em análise':
+      case 'em analise':
+      case 'análise':
+        return (
+          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-bold font-['Space_Mono'] bg-violet-500/15 text-violet-300 border border-violet-500/30 shadow-[0_0_12px_rgba(139,92,246,0.15)]">
+            <Sparkles size={12} className="text-violet-400 shrink-0" />
+            Em Análise
+          </span>
+        );
+      case 'ideia':
+      case 'conceito':
+        return (
+          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-bold font-['Space_Mono'] bg-fuchsia-500/15 text-fuchsia-300 border border-fuchsia-500/30 shadow-[0_0_12px_rgba(217,70,239,0.15)]">
+            <Lightbulb size={12} className="text-fuchsia-400 shrink-0" />
+            Ideia
+          </span>
+        );
+      case 'cancelado':
+        return (
+          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-bold font-['Space_Mono'] bg-rose-500/15 text-rose-300 border border-rose-500/30 shadow-[0_0_12px_rgba(244,63,94,0.15)]">
+            <AlertTriangle size={12} className="text-rose-400 shrink-0" />
+            Cancelado
+          </span>
+        );
       default:
-        return <span className="px-2.5 py-0.5 text-xs font-bold font-['Space_Mono'] bg-gray-800 text-gray-300 border border-gray-700">{status}</span>;
+        return (
+          <span className="inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-bold font-['Space_Mono'] bg-gray-800 text-gray-300 border border-gray-700 capitalize">
+            {status}
+          </span>
+        );
     }
   };
 
@@ -740,22 +1112,42 @@ export default function ProjectsHub({
 
       {activeSubTab === 'projetos' && (
         <div className="space-y-6">
-          <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-4 p-4 bg-[rgba(255,255,255,0.02)] border border-[var(--color-ink-faint)]">
-            <div className="relative flex-1 max-w-md">
-              <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-500" size={16} />
-              <input
-                type="text"
-                placeholder="BUSCAR POR JOGO, ENGINE, GÊNERO OU LÍDER..."
-                value={projectSearch}
-                onChange={e => setProjectSearch(e.target.value)}
-                className="w-full bg-transparent border border-[var(--color-ink-faint)] py-2 pl-10 pr-3 text-xs text-white font-['Space_Mono'] uppercase outline-none focus:border-[var(--color-accent)]"
-              />
+          <div className="flex flex-col md:flex-row items-stretch md:items-center justify-between gap-4 p-4 bg-[rgba(255,255,255,0.02)] border border-[var(--color-ink-faint)]">
+            <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 flex-1">
+              <div className="relative flex-1">
+                <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-500" size={16} />
+                <input
+                  type="text"
+                  placeholder="BUSCAR POR JOGO, ENGINE, GÊNERO OU LÍDER..."
+                  value={projectSearch}
+                  onChange={e => setProjectSearch(e.target.value)}
+                  className="w-full bg-transparent border border-[var(--color-ink-faint)] py-2 pl-10 pr-3 text-xs text-white font-['Space_Mono'] uppercase outline-none focus:border-[var(--color-accent)]"
+                />
+              </div>
+
+              <div className="flex items-center gap-2">
+                <Filter size={14} className="text-gray-500 shrink-0 hidden sm:inline" />
+                <select
+                  value={projectStatusFilter}
+                  onChange={e => setProjectStatusFilter(e.target.value)}
+                  className="w-full sm:w-auto bg-[#161619] border border-[var(--color-ink-faint)] py-2 px-3 text-xs text-gray-300 font-['Space_Mono'] outline-none cursor-pointer focus:border-[var(--color-accent)]"
+                >
+                  <option value="all">Todos os Status</option>
+                  <option value="em andamento">Em Andamento</option>
+                  <option value="concluído">Concluído</option>
+                  <option value="pausado">Pausado</option>
+                  <option value="aprovado">Aprovado</option>
+                  <option value="em análise">Em Análise</option>
+                  <option value="ideia">Ideia</option>
+                </select>
+              </div>
             </div>
-            <div className="flex items-center gap-3">
+
+            <div className="flex items-center justify-between sm:justify-end gap-3">
               <span className="text-xs font-['Space_Mono'] text-gray-400">
-                {projects.length} {projects.length === 1 ? 'projeto ativo' : 'projetos ativos'}
+                {filteredProjects.length} {filteredProjects.length === 1 ? 'projeto' : 'projetos'}
               </span>
-              {isAdmin && (
+              {canEditGames && (
                 <div className="flex items-center gap-2">
                   <button
                     onClick={() => setIsNewProjectModalOpen(true)}
@@ -763,13 +1155,15 @@ export default function ProjectsHub({
                   >
                     <Plus size={14} /> Novo Projeto
                   </button>
-                  <button
-                    onClick={handleClearAllData}
-                    title="Limpar todos os projetos e vagas para cadastrar novos"
-                    className="flex items-center gap-1.5 px-2.5 py-1.5 bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/30 text-xs font-['Space_Mono'] transition-colors cursor-pointer"
-                  >
-                    <Trash2 size={13} /> Limpar Tudo
-                  </button>
+                  {isAdmin && (
+                    <button
+                      onClick={handleClearAllData}
+                      title="Limpar todos os projetos e vagas para cadastrar novos"
+                      className="flex items-center gap-1.5 px-2.5 py-1.5 bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/30 text-xs font-['Space_Mono'] transition-colors cursor-pointer"
+                    >
+                      <Trash2 size={13} /> Limpar Tudo
+                    </button>
+                  )}
                 </div>
               )}
             </div>
@@ -787,7 +1181,7 @@ export default function ProjectsHub({
                     A base de projetos está limpa para você cadastrar seus projetos oficiais da LAJE.
                   </p>
                 </div>
-                {isAdmin && (
+                {canEditGames && (
                   <button
                     onClick={() => setIsNewProjectModalOpen(true)}
                     className="inline-flex items-center gap-2 px-4 py-2.5 bg-emerald-500 hover:bg-emerald-400 text-gray-950 font-bold text-xs font-['Space_Mono'] transition-colors cursor-pointer shadow-lg"
@@ -814,7 +1208,7 @@ export default function ProjectsHub({
                       <div className="w-12 h-12 rounded-lg bg-gray-800/80 border border-gray-700 flex items-center justify-center text-2xl shadow-inner shrink-0 group-hover:scale-105 transition-transform">
                         {proj.coverEmoji || '🎮'}
                       </div>
-                      <div className="text-right">
+                      <div className="text-right flex flex-col items-end shrink-0">
                         {getStatusBadge(proj.status)}
                         <span className="block text-[10px] text-gray-500 font-['Space_Mono'] mt-1">
                           {proj.semester || '2026.2'}
@@ -851,10 +1245,22 @@ export default function ProjectsHub({
                     </div>
 
                     <div className="flex items-center justify-between text-xs text-gray-400">
-                      <span className="truncate max-w-[150px]">Líder: <strong className="text-gray-200">{proj.leader}</strong></span>
-                      <span className="text-emerald-400 group-hover:translate-x-0.5 transition-transform flex items-center gap-1 font-['Space_Mono'] font-bold text-[11px]">
-                        Ver Ficha <ChevronRight size={13} />
-                      </span>
+                      <span className="truncate max-w-[130px]">Líder: <strong className="text-gray-200">{proj.leader}</strong></span>
+                      <div className="flex items-center gap-2">
+                        {canEditGames && (
+                          <button
+                            type="button"
+                            onClick={(e) => handleOpenEditProject(proj, e)}
+                            className="px-2.5 py-1 bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border border-emerald-500/40 text-[11px] font-['Space_Mono'] flex items-center gap-1 cursor-pointer transition-colors"
+                            title="Editar informações do jogo"
+                          >
+                            <Edit2 size={12} /> Editar
+                          </button>
+                        )}
+                        <span className="text-emerald-400 group-hover:translate-x-0.5 transition-transform flex items-center gap-1 font-['Space_Mono'] font-bold text-[11px]">
+                          Ver Ficha <ChevronRight size={13} />
+                        </span>
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -878,9 +1284,8 @@ export default function ProjectsHub({
                   <h4 className="text-sm font-bold text-white font-['Syne']">
                     Invertendo o Sentido do Convite
                   </h4>
-                  <p className="text-xs text-gray-300 mt-1 max-w-2xl leading-relaxed">
-                    Aqui você encontra trabalho concreto com demandas claras.
-                    A diretoria e os líderes cruzam as vagas com o formulário de membros para enviar convites diretos.
+                  <p className="text-xs text-gray-300 mt-1 max-w-xl leading-relaxed">
+                    Vagas abertas com demandas claras. Os líderes usam seu formulário para convidar você diretamente.
                   </p>
                 </div>
               </div>
@@ -1179,8 +1584,8 @@ export default function ProjectsHub({
                 <h4 className="text-sm font-bold text-white font-['Syne']">
                   Duas Etapas em Vez de Uma: Proposta Leve (10 min)
                 </h4>
-                <p className="text-xs text-gray-300 mt-1 max-w-3xl leading-relaxed">
-                  Não exigimos um documento longo de 40 páginas antes do projeto existir. Você responde 9 perguntas simples para a diretoria entender a ideia e ver como apoiar. O GDD completo só é montado para projetos aprovados!
+                <p className="text-xs text-gray-300 mt-1 leading-relaxed whitespace-nowrap overflow-x-auto">
+                  Sem burocracia: responda 9 perguntas simples para avaliarmos sua ideia. O GDD completo só é montado após a aprovação.
                 </p>
               </div>
             </div>
@@ -1213,9 +1618,9 @@ export default function ProjectsHub({
                 <input
                   type="text"
                   required
-                  placeholder="@usuario_discord"
+                  placeholder="usuario_discord"
                   value={proposalForm.proposerDiscord}
-                  onChange={e => setProposalForm({ ...proposalForm, proposerDiscord: e.target.value })}
+                  onChange={e => setProposalForm({ ...proposalForm, proposerDiscord: e.target.value.replace(/^@/, '') })}
                   className="w-full bg-[#161619] border border-[var(--color-ink-faint)] p-2.5 text-xs text-white outline-none focus:border-[var(--color-accent)] font-['Space_Mono']"
                 />
               </div>
@@ -1408,13 +1813,51 @@ export default function ProjectsHub({
               <div className="flex items-center gap-3">
                 <span className="text-3xl">{selectedProject.coverEmoji || '🎮'}</span>
                 <div>
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2 flex-wrap">
                     <h3 className="text-xl font-bold text-white font-['Syne']">{selectedProject.name}</h3>
                     {getStatusBadge(selectedProject.status)}
                   </div>
                   <p className="text-xs text-amber-400 font-['Space_Mono'] mt-0.5">
                     {selectedProject.genre} • {selectedProject.engine} • Semestre {selectedProject.semester}
                   </p>
+                  {canEditGames && selectedProject.id && (
+                    <div className="flex flex-wrap items-center gap-2 mt-2 pt-2 border-t border-gray-800/60">
+                      <span className="text-[10px] uppercase font-['Space_Mono'] text-gray-400">Alterar Status:</span>
+                      <select
+                        value={selectedProject.status}
+                        onChange={async (e) => {
+                          const newStatus = e.target.value;
+                          if (!selectedProject.id) return;
+                          try {
+                            await updateDoc(doc(db, 'projects', selectedProject.id), { status: newStatus });
+                            setSelectedProject({ ...selectedProject, status: newStatus as any });
+                            setProjects(prev => prev.map(p => p.id === selectedProject.id ? { ...p, status: newStatus as any } : p));
+                            toast.success(`Status atualizado para "${newStatus}"!`);
+                          } catch (err) {
+                            console.error(err);
+                            toast.error('Erro ao atualizar status');
+                          }
+                        }}
+                        className="bg-[#1b1b1e] border border-gray-700 text-xs text-gray-200 px-2 py-1 font-['Space_Mono'] outline-none cursor-pointer focus:border-emerald-500"
+                      >
+                        <option value="em andamento">Em Andamento</option>
+                        <option value="em produção">Em Produção</option>
+                        <option value="concluído">Concluído</option>
+                        <option value="pausado">Pausado</option>
+                        <option value="aprovado">Aprovado</option>
+                        <option value="em análise">Em Análise</option>
+                        <option value="ideia">Ideia</option>
+                        <option value="cancelado">Cancelado</option>
+                      </select>
+                      <button
+                        type="button"
+                        onClick={() => handleOpenEditProject(selectedProject)}
+                        className="px-2.5 py-1 bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/40 text-[11px] font-['Space_Mono'] flex items-center gap-1 cursor-pointer transition-colors"
+                      >
+                        <Edit2 size={12} /> Editar Ficha do Jogo
+                      </button>
+                    </div>
+                  )}
                 </div>
               </div>
               <button 
@@ -1500,7 +1943,7 @@ export default function ProjectsHub({
                     </p>
                   )}
                 </div>
-                {isAdmin && (
+                {canEditGames && (
                   <button
                     onClick={() => {
                       setCheckInModalProject(selectedProject);
@@ -1517,6 +1960,15 @@ export default function ProjectsHub({
             {/* Footer */}
             <div className="mt-6 pt-4 border-t border-gray-800 flex flex-wrap items-center justify-between gap-3">
               <div className="flex items-center gap-2">
+                {canEditGames && (
+                  <button
+                    type="button"
+                    onClick={() => handleOpenEditProject(selectedProject)}
+                    className="px-3 py-1.5 bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border border-emerald-500/40 text-xs font-['Space_Mono'] flex items-center gap-1.5 cursor-pointer transition-colors"
+                  >
+                    <Edit2 size={13} /> Editar Ficha do Jogo
+                  </button>
+                )}
                 {isAdmin && (
                   <button
                     type="button"
@@ -1720,12 +2172,14 @@ export default function ProjectsHub({
                     onChange={e => setNewProjectForm({ ...newProjectForm, status: e.target.value as any })}
                     className="w-full bg-[#161619] border border-gray-700 p-2.5 text-xs text-white outline-none"
                   >
+                    <option value="em andamento">Em Andamento</option>
                     <option value="em produção">Em Produção</option>
-                    <option value="aprovado">Aprovado</option>
-                    <option value="ideia">Ideia</option>
-                    <option value="em análise">Em Análise</option>
-                    <option value="pausado">Pausado</option>
                     <option value="concluído">Concluído</option>
+                    <option value="pausado">Pausado</option>
+                    <option value="aprovado">Aprovado</option>
+                    <option value="em análise">Em Análise</option>
+                    <option value="ideia">Ideia</option>
+                    <option value="cancelado">Cancelado</option>
                   </select>
                 </div>
               </div>
@@ -1784,9 +2238,9 @@ export default function ProjectsHub({
                   <label className="block text-gray-300 font-semibold mb-1 uppercase">Discord do Líder</label>
                   <input
                     type="text"
-                    placeholder="@usuario"
+                    placeholder="usuario_discord"
                     value={newProjectForm.leaderDiscord}
-                    onChange={e => setNewProjectForm({ ...newProjectForm, leaderDiscord: e.target.value })}
+                    onChange={e => setNewProjectForm({ ...newProjectForm, leaderDiscord: e.target.value.replace(/^@/, '') })}
                     className="w-full bg-[#161619] border border-gray-700 p-2.5 text-xs text-white outline-none focus:border-emerald-500"
                   />
                 </div>
@@ -1839,14 +2293,329 @@ export default function ProjectsHub({
               </div>
 
               <div>
-                <label className="block text-gray-300 font-semibold mb-1 uppercase">Membros da Equipe</label>
+                <label className="block text-gray-300 font-semibold mb-1 uppercase flex items-center justify-between flex-wrap gap-2">
+                  <div className="flex items-center gap-2">
+                    <span>Membros da Equipe</span>
+                    {canEditGames && (
+                      <span className="text-[10px] font-['Space_Mono'] text-emerald-400 bg-emerald-500/10 px-2 py-0.5 border border-emerald-500/30 rounded font-normal normal-case">
+                        Filtro do Dashboard (RH / Super Admin)
+                      </span>
+                    )}
+                  </div>
+                  {canEditGames && (
+                    <button
+                      type="button"
+                      onClick={() => setIsMemberFilterOpen(!isMemberFilterOpen)}
+                      className={`text-[11px] font-['Space_Mono'] font-bold px-2.5 py-1 flex items-center gap-1.5 transition-all cursor-pointer rounded ${
+                        isMemberFilterOpen
+                          ? 'bg-emerald-500 text-gray-950 shadow-md'
+                          : 'bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border border-emerald-500/40'
+                      }`}
+                      title="Filtrar membros da base do RH e adicionar à equipe"
+                    >
+                      <Filter size={13} />
+                      <span>{isMemberFilterOpen ? 'Ocultar Filtro' : '+ Filtrar Membros (Dashboard)'}</span>
+                      {newProjectForm.teamMembers && (
+                        <span className="ml-1 px-1.5 py-0.2 bg-black/40 text-emerald-300 rounded text-[10px]">
+                          {newProjectForm.teamMembers.split(',').filter(s => s.trim()).length}
+                        </span>
+                      )}
+                    </button>
+                  )}
+                </label>
                 <input
                   type="text"
-                  placeholder="Ex: Maria (Líder), Lucas (Dev), Sofia (Arte)..."
+                  placeholder="Ex: Maria (Líder), Lucas (Dev), Sofia (Arte)... ou clique no botão acima para abrir o filtro"
                   value={newProjectForm.teamMembers}
+                  onFocus={() => { if (canEditGames && !isMemberFilterOpen) setIsMemberFilterOpen(true); }}
                   onChange={e => setNewProjectForm({ ...newProjectForm, teamMembers: e.target.value })}
                   className="w-full bg-[#161619] border border-gray-700 p-2.5 text-xs text-white outline-none focus:border-emerald-500"
                 />
+
+                {/* Chips of added members */}
+                {newProjectForm.teamMembers && (
+                  <div className="flex flex-wrap items-center gap-1.5 mt-2">
+                    <span className="text-[10px] text-gray-400 font-['Space_Mono'] uppercase mr-1">
+                      Equipe ({newProjectForm.teamMembers.split(',').filter(s => s.trim()).length}):
+                    </span>
+                    {newProjectForm.teamMembers.split(',').map(s => s.trim()).filter(Boolean).map(memberName => (
+                      <span 
+                        key={memberName}
+                        className="inline-flex items-center gap-1.5 px-2 py-0.5 bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 text-[11px] rounded"
+                      >
+                        <span>{memberName}</span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const updated = newProjectForm.teamMembers
+                              .split(',')
+                              .map(s => s.trim())
+                              .filter(m => m !== memberName)
+                              .join(', ');
+                            setNewProjectForm({ ...newProjectForm, teamMembers: updated });
+                            toast.success(`"${memberName}" removido(a) da equipe`);
+                          }}
+                          className="hover:text-red-400 cursor-pointer p-0.5 transition-colors"
+                          title="Remover da equipe"
+                        >
+                          <X size={11} />
+                        </button>
+                      </span>
+                    ))}
+                    {newProjectForm.teamMembers.split(',').filter(s => s.trim()).length > 1 && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setNewProjectForm({ ...newProjectForm, teamMembers: '' });
+                          toast.success('Membros da equipe limpos');
+                        }}
+                        className="text-[10px] text-gray-500 hover:text-red-400 font-['Space_Mono'] underline cursor-pointer ml-1"
+                      >
+                        Limpar todos
+                      </button>
+                    )}
+                  </div>
+                )}
+
+                {/* Dashboard Member Filter Box for Super Admin and Membro do Diretório */}
+                {canEditGames && isMemberFilterOpen && (
+                  <div className="mt-3 p-3.5 bg-gray-950 border border-emerald-500/50 rounded shadow-xl space-y-3">
+                    <div className="flex items-center justify-between pb-2 border-b border-gray-800">
+                      <div className="flex items-center gap-2">
+                        <Users size={16} className="text-emerald-400" />
+                        <div>
+                          <span className="text-xs font-bold text-white uppercase font-['Syne'] block">
+                            Filtro de Membros da Equipe (Base do Dashboard / Diretório)
+                          </span>
+                          <span className="text-[10px] text-gray-400 font-['Space_Mono'] block">
+                            Super Admin e Membros do Diretório podem buscar, filtrar e adicionar membros com 1 clique
+                          </span>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setIsMemberFilterOpen(false)}
+                        className="text-gray-400 hover:text-white p-1 text-xs"
+                        title="Fechar filtro"
+                      >
+                        <X size={16} />
+                      </button>
+                    </div>
+
+                    {/* Filter Inputs Grid: Search + Role + Status */}
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                      <div className="relative">
+                        <input
+                          type="text"
+                          placeholder="Buscar por nome, e-mail ou discord..."
+                          value={memberSearchQuery}
+                          onChange={e => setMemberSearchQuery(e.target.value)}
+                          className="w-full bg-[#161619] border border-gray-700 py-1.5 pl-2.5 pr-6 text-white text-[11px] outline-none focus:border-emerald-500 font-['Space_Mono']"
+                        />
+                        {memberSearchQuery && (
+                          <button
+                            type="button"
+                            onClick={() => setMemberSearchQuery('')}
+                            className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-white cursor-pointer"
+                          >
+                            <X size={12} />
+                          </button>
+                        )}
+                      </div>
+
+                      <select
+                        value={memberRoleFilter}
+                        onChange={e => setMemberRoleFilter(e.target.value)}
+                        className="w-full bg-[#161619] border border-gray-700 py-1.5 px-2 text-white text-[11px] outline-none focus:border-emerald-500 cursor-pointer font-['Space_Mono']"
+                      >
+                        <option value="all">Todas as Funções ({registeredMembers.length})</option>
+                        {distinctMemberRoles.map(role => (
+                          <option key={role} value={role}>{role}</option>
+                        ))}
+                      </select>
+
+                      <select
+                        value={memberProjectFilter}
+                        onChange={e => setMemberProjectFilter(e.target.value as any)}
+                        className="w-full bg-[#161619] border border-gray-700 py-1.5 px-2 text-white text-[11px] outline-none focus:border-emerald-500 cursor-pointer font-['Space_Mono']"
+                      >
+                        <option value="all">Todos os Status</option>
+                        <option value="available">🌱 Sem Projeto (Disponíveis)</option>
+                        <option value="in_project">🎮 Já em Projeto</option>
+                      </select>
+                    </div>
+
+                    {/* Quick Filter Shortcut Pills (Dashboard Style) */}
+                    <div className="flex flex-wrap items-center gap-1.5 pt-1 text-[10px] font-['Space_Mono']">
+                      <span className="text-gray-500 mr-1">Atalhos:</span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setMemberRoleFilter('all');
+                          setMemberProjectFilter('all');
+                          setMemberSearchQuery('');
+                        }}
+                        className={`px-2 py-0.5 border transition-colors cursor-pointer rounded ${
+                          memberRoleFilter === 'all' && memberProjectFilter === 'all' && !memberSearchQuery
+                            ? 'bg-emerald-500 text-gray-950 font-bold border-emerald-500'
+                            : 'bg-gray-900 text-gray-400 hover:text-white border-gray-800'
+                        }`}
+                      >
+                        Todos ({registeredMembers.length})
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setMemberProjectFilter(memberProjectFilter === 'available' ? 'all' : 'available');
+                        }}
+                        className={`px-2 py-0.5 border transition-colors cursor-pointer rounded ${
+                          memberProjectFilter === 'available'
+                            ? 'bg-emerald-500/20 text-emerald-300 font-bold border-emerald-500/40'
+                            : 'bg-gray-900 text-gray-400 hover:text-emerald-400 border-gray-800'
+                        }`}
+                      >
+                        🌱 Sem Projeto
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setMemberProjectFilter(memberProjectFilter === 'in_project' ? 'all' : 'in_project');
+                        }}
+                        className={`px-2 py-0.5 border transition-colors cursor-pointer rounded ${
+                          memberProjectFilter === 'in_project'
+                            ? 'bg-amber-500/20 text-amber-300 font-bold border-amber-500/40'
+                            : 'bg-gray-900 text-gray-400 hover:text-amber-400 border-gray-800'
+                        }`}
+                      >
+                        🎮 Em Projeto
+                      </button>
+                      {['Programação', 'Arte', 'Game Design', 'Som', 'RH'].map(r => (
+                        <button
+                          key={r}
+                          type="button"
+                          onClick={() => {
+                            setMemberRoleFilter(memberRoleFilter === r ? 'all' : r);
+                          }}
+                          className={`px-2 py-0.5 border transition-colors cursor-pointer rounded ${
+                            memberRoleFilter === r
+                              ? 'bg-emerald-500/20 text-emerald-300 font-bold border-emerald-500/40'
+                              : 'bg-gray-900 text-gray-400 hover:text-white border-gray-800'
+                          }`}
+                        >
+                          {r}
+                        </button>
+                      ))}
+                    </div>
+
+                    {/* Member Results List */}
+                    <div className="max-h-56 overflow-y-auto space-y-1.5 pr-1 scrollbar-thin scrollbar-thumb-gray-800 divide-y divide-gray-800/60">
+                      {(() => {
+                        const filtered = registeredMembers.filter(m => {
+                          if (m.status === 'Ex-membro') return false;
+                          if (memberSearchQuery.trim()) {
+                            const q = memberSearchQuery.toLowerCase().trim();
+                            const matchName = (m.name || '').toLowerCase().includes(q);
+                            const matchEmail = (m.email || '').toLowerCase().includes(q);
+                            const matchDiscord = (m.discordUser || '').toLowerCase().includes(q);
+                            const matchRole = (m.leagueRole || '').toLowerCase().includes(q);
+                            const matchCourse = (m.course || '').toLowerCase().includes(q);
+                            if (!matchName && !matchEmail && !matchDiscord && !matchRole && !matchCourse) return false;
+                          }
+                          if (memberRoleFilter !== 'all') {
+                            const mRoles = String(m.leagueRole || '').toLowerCase();
+                            if (!mRoles.includes(memberRoleFilter.toLowerCase())) return false;
+                          }
+                          if (memberProjectFilter === 'available') {
+                            const hasProj = m.isInProject === 'Sim' || (m.currentProjects && m.currentProjects.trim().length > 0 && m.currentProjects.toLowerCase() !== 'nenhum');
+                            if (hasProj) return false;
+                          } else if (memberProjectFilter === 'in_project') {
+                            const hasProj = m.isInProject === 'Sim' || (m.currentProjects && m.currentProjects.trim().length > 0 && m.currentProjects.toLowerCase() !== 'nenhum');
+                            if (!hasProj) return false;
+                          }
+                          return true;
+                        });
+
+                        if (filtered.length === 0) {
+                          return (
+                            <div className="text-center py-6 text-gray-500 text-xs font-['Space_Mono']">
+                              Nenhum membro encontrado com os filtros selecionados.
+                            </div>
+                          );
+                        }
+
+                        const currentTeamList = (newProjectForm.teamMembers || '')
+                          .split(',')
+                          .map(s => s.trim().toLowerCase())
+                          .filter(Boolean);
+
+                        return filtered.map(member => {
+                          const mName = (member.name || 'Membro').trim();
+                          const isAlreadyIn = currentTeamList.some(item => 
+                            item.includes(mName.toLowerCase()) || mName.toLowerCase().includes(item)
+                          );
+                          const primaryRole = member.leagueRole ? String(member.leagueRole).split(',')[0].trim() : 'Membro';
+                          const hasProject = member.isInProject === 'Sim' || (member.currentProjects && member.currentProjects.trim().length > 0 && member.currentProjects.toLowerCase() !== 'nenhum');
+
+                          return (
+                            <div
+                              key={member.id}
+                              className={`flex items-center justify-between p-2.5 transition-colors rounded ${
+                                isAlreadyIn
+                                  ? 'bg-emerald-500/10 border border-emerald-500/40'
+                                  : 'bg-[#161619] border border-gray-800 hover:border-gray-700'
+                              }`}
+                            >
+                              <div className="min-w-0 pr-3">
+                                <div className="flex items-center gap-2 flex-wrap mb-1">
+                                  <span className="font-bold text-white text-xs">{mName}</span>
+                                  <span className="px-1.5 py-0.2 bg-gray-800 text-emerald-400 text-[10px] font-['Space_Mono'] font-bold rounded">
+                                    {primaryRole}
+                                  </span>
+                                  {hasProject ? (
+                                    <span className="text-[10px] text-amber-400/90 font-['Space_Mono'] bg-amber-500/10 px-1.5 py-0.2 rounded border border-amber-500/20">
+                                      🎮 Em: {member.currentProjects}
+                                    </span>
+                                  ) : (
+                                    <span className="text-[10px] text-emerald-400 font-['Space_Mono'] bg-emerald-500/10 px-1.5 py-0.2 rounded border border-emerald-500/20">
+                                      🌱 Disponível
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="flex items-center gap-2 text-[10px] text-gray-400 font-['Space_Mono'] flex-wrap">
+                                  {member.discordUser && <span>@{member.discordUser}</span>}
+                                  {member.email && <span className="text-gray-500">• {member.email}</span>}
+                                  {member.course && <span className="text-gray-500">• {member.course}</span>}
+                                </div>
+                              </div>
+
+                              <button
+                                type="button"
+                                onClick={() => handleToggleTeamMemberNew(member)}
+                                className={`px-3 py-1.5 text-xs font-bold font-['Space_Mono'] transition-all cursor-pointer shrink-0 rounded flex items-center gap-1.5 ${
+                                  isAlreadyIn
+                                    ? 'bg-emerald-500 text-gray-950 hover:bg-red-500 hover:text-white shadow-sm'
+                                    : 'bg-emerald-500/10 hover:bg-emerald-500 text-emerald-300 hover:text-gray-950 border border-emerald-500/30'
+                                }`}
+                              >
+                                {isAlreadyIn ? (
+                                  <>
+                                    <Check size={13} />
+                                    <span>Na Equipe</span>
+                                  </>
+                                ) : (
+                                  <>
+                                    <UserPlus size={13} />
+                                    <span>+ Adicionar</span>
+                                  </>
+                                )}
+                              </button>
+                            </div>
+                          );
+                        });
+                      })()}
+                    </div>
+                  </div>
+                )}
               </div>
 
               {/* Automatic Email Notification Box */}
@@ -1882,6 +2651,552 @@ export default function ProjectsHub({
                   className="px-5 py-2 bg-emerald-500 hover:bg-emerald-400 text-gray-950 font-bold cursor-pointer"
                 >
                   {isSubmittingProject ? 'Cadastrando...' : 'Cadastrar Projeto'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: EDITAR JOGO / PROJETO */}
+      {isEditProjectModalOpen && editingProject && (
+        <div 
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm"
+          onClick={() => {
+            setIsEditProjectModalOpen(false);
+            setEditingProject(null);
+          }}
+        >
+          <div 
+            className="bg-[#141416] border border-emerald-500/40 w-full max-w-2xl max-h-[90vh] overflow-y-auto shadow-2xl p-6 relative"
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between pb-3 border-b border-gray-800 mb-4">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 bg-emerald-500/20 text-emerald-400 border border-emerald-500/40">
+                  <Edit2 size={20} />
+                </div>
+                <div>
+                  <h3 className="text-lg font-bold text-white font-['Syne']">Editar Ficha do Jogo</h3>
+                  <p className="text-xs text-emerald-400/90 font-['Space_Mono']">
+                    Modo Edição RH &bull; {editingProject.name}
+                  </p>
+                </div>
+              </div>
+              <button 
+                onClick={() => {
+                  setIsEditProjectModalOpen(false);
+                  setEditingProject(null);
+                }} 
+                className="text-gray-400 hover:text-white p-1"
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveEditProject} className="space-y-4 text-xs font-['Space_Mono']">
+              {/* Emoji Selector */}
+              <div>
+                <label className="block text-gray-300 font-semibold mb-1 uppercase">Emoji de Capa</label>
+                <div className="flex flex-wrap gap-2">
+                  {['🎮', '⚔️', '🚀', '🎪', '⚡', '🌿', '🧩', '🎲', '👾', '🕹️', '🏰', '🏎️', '🧙'].map(emoji => (
+                    <button
+                      type="button"
+                      key={emoji}
+                      onClick={() => setEditProjectForm({ ...editProjectForm, coverEmoji: emoji })}
+                      className={`text-xl p-2 rounded border cursor-pointer transition-all ${
+                        editProjectForm.coverEmoji === emoji
+                          ? 'bg-emerald-500/20 border-emerald-500 text-white scale-110'
+                          : 'bg-gray-900 border-gray-800 hover:bg-gray-800 text-gray-300'
+                      }`}
+                    >
+                      {emoji}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-gray-300 font-semibold mb-1 uppercase">Nome do Jogo *</label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="Ex: Depois do Espetáculo"
+                    value={editProjectForm.name}
+                    onChange={e => setEditProjectForm({ ...editProjectForm, name: e.target.value })}
+                    className="w-full bg-[#161619] border border-gray-700 p-2.5 text-xs text-white outline-none focus:border-emerald-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-gray-300 font-semibold mb-1 uppercase">Status Atual</label>
+                  <select
+                    value={editProjectForm.status}
+                    onChange={e => setEditProjectForm({ ...editProjectForm, status: e.target.value as any })}
+                    className="w-full bg-[#161619] border border-gray-700 p-2.5 text-xs text-white outline-none focus:border-emerald-500 cursor-pointer"
+                  >
+                    <option value="em andamento">Em Andamento</option>
+                    <option value="em produção">Em Produção</option>
+                    <option value="concluído">Concluído</option>
+                    <option value="pausado">Pausado</option>
+                    <option value="aprovado">Aprovado</option>
+                    <option value="em análise">Em Análise</option>
+                    <option value="ideia">Ideia</option>
+                    <option value="cancelado">Cancelado</option>
+                  </select>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                <div>
+                  <label className="block text-gray-300 font-semibold mb-1 uppercase">Gênero</label>
+                  <input
+                    type="text"
+                    placeholder="Ex: Metroidvania, RPG..."
+                    value={editProjectForm.genre}
+                    onChange={e => setEditProjectForm({ ...editProjectForm, genre: e.target.value })}
+                    className="w-full bg-[#161619] border border-gray-700 p-2.5 text-xs text-white outline-none focus:border-emerald-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-gray-300 font-semibold mb-1 uppercase">Engine</label>
+                  <select
+                    value={editProjectForm.engine}
+                    onChange={e => setEditProjectForm({ ...editProjectForm, engine: e.target.value })}
+                    className="w-full bg-[#161619] border border-gray-700 p-2.5 text-xs text-white outline-none focus:border-emerald-500 cursor-pointer"
+                  >
+                    <option value="Godot">Godot</option>
+                    <option value="Unity">Unity</option>
+                    <option value="Unreal Engine">Unreal Engine</option>
+                    <option value="RPG Maker">RPG Maker</option>
+                    <option value="GameMaker">GameMaker</option>
+                    <option value="Outra">Outra</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-gray-300 font-semibold mb-1 uppercase">Semestre</label>
+                  <input
+                    type="text"
+                    placeholder="2026.2"
+                    value={editProjectForm.semester}
+                    onChange={e => setEditProjectForm({ ...editProjectForm, semester: e.target.value })}
+                    className="w-full bg-[#161619] border border-gray-700 p-2.5 text-xs text-white outline-none focus:border-emerald-500"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-gray-300 font-semibold mb-1 uppercase">Líder do Projeto *</label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="Nome completo do líder"
+                    value={editProjectForm.leader}
+                    onChange={e => setEditProjectForm({ ...editProjectForm, leader: e.target.value })}
+                    className="w-full bg-[#161619] border border-gray-700 p-2.5 text-xs text-white outline-none focus:border-emerald-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-gray-300 font-semibold mb-1 uppercase">Discord do Líder</label>
+                  <input
+                    type="text"
+                    placeholder="usuario_discord"
+                    value={editProjectForm.leaderDiscord}
+                    onChange={e => setEditProjectForm({ ...editProjectForm, leaderDiscord: e.target.value.replace(/^@/, '') })}
+                    className="w-full bg-[#161619] border border-gray-700 p-2.5 text-xs text-white outline-none focus:border-emerald-500"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-gray-300 font-semibold mb-1 uppercase">Descrição Resumida</label>
+                <textarea
+                  rows={2}
+                  placeholder="Resumo do conceito do jogo..."
+                  value={editProjectForm.description}
+                  onChange={e => setEditProjectForm({ ...editProjectForm, description: e.target.value })}
+                  className="w-full bg-[#161619] border border-gray-700 p-2.5 text-xs text-white outline-none focus:border-emerald-500"
+                />
+              </div>
+
+              <div>
+                <label className="block text-gray-300 font-semibold mb-1 uppercase">Elevator Pitch (O Jogo em 1 Frase/Parágrafo)</label>
+                <textarea
+                  rows={2}
+                  placeholder="É um [gênero] onde você [ação] para [objetivo]..."
+                  value={editProjectForm.elevatorPitch}
+                  onChange={e => setEditProjectForm({ ...editProjectForm, elevatorPitch: e.target.value })}
+                  className="w-full bg-[#161619] border border-gray-700 p-2.5 text-xs text-white outline-none focus:border-emerald-500"
+                />
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-gray-300 font-semibold mb-1 uppercase">O Diferencial</label>
+                  <input
+                    type="text"
+                    placeholder="Mecânica central única ou elemento narrativo..."
+                    value={editProjectForm.diferencial}
+                    onChange={e => setEditProjectForm({ ...editProjectForm, diferencial: e.target.value })}
+                    className="w-full bg-[#161619] border border-gray-700 p-2.5 text-xs text-white outline-none focus:border-emerald-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-gray-300 font-semibold mb-1 uppercase">Escopo Alvo</label>
+                  <input
+                    type="text"
+                    placeholder="Ex: Demo jogável de 20 minutos neste semestre"
+                    value={editProjectForm.targetScope}
+                    onChange={e => setEditProjectForm({ ...editProjectForm, targetScope: e.target.value })}
+                    className="w-full bg-[#161619] border border-gray-700 p-2.5 text-xs text-white outline-none focus:border-emerald-500"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-gray-300 font-semibold mb-1 uppercase flex items-center justify-between flex-wrap gap-2">
+                  <div className="flex items-center gap-2">
+                    <span>Membros da Equipe</span>
+                    {canEditGames && (
+                      <span className="text-[10px] font-['Space_Mono'] text-emerald-400 bg-emerald-500/10 px-2 py-0.5 border border-emerald-500/30 rounded font-normal normal-case">
+                        Filtro do Dashboard (RH / Super Admin)
+                      </span>
+                    )}
+                  </div>
+                  {canEditGames && (
+                    <button
+                      type="button"
+                      onClick={() => setIsEditMemberFilterOpen(!isEditMemberFilterOpen)}
+                      className={`text-[11px] font-['Space_Mono'] font-bold px-2.5 py-1 flex items-center gap-1.5 transition-all cursor-pointer rounded ${
+                        isEditMemberFilterOpen
+                          ? 'bg-emerald-500 text-gray-950 shadow-md'
+                          : 'bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border border-emerald-500/40'
+                      }`}
+                      title="Filtrar membros da base do RH e adicionar à equipe"
+                    >
+                      <Filter size={13} />
+                      <span>{isEditMemberFilterOpen ? 'Ocultar Filtro' : '+ Filtrar Membros (Dashboard)'}</span>
+                      {editProjectForm.teamMembers && (
+                        <span className="ml-1 px-1.5 py-0.2 bg-black/40 text-emerald-300 rounded text-[10px]">
+                          {editProjectForm.teamMembers.split(',').filter(s => s.trim()).length}
+                        </span>
+                      )}
+                    </button>
+                  )}
+                </label>
+                <input
+                  type="text"
+                  placeholder="Ex: Maria (Líder), Lucas (Dev), Sofia (Arte)... ou clique no botão acima para abrir o filtro"
+                  value={editProjectForm.teamMembers}
+                  onFocus={() => { if (canEditGames && !isEditMemberFilterOpen) setIsEditMemberFilterOpen(true); }}
+                  onChange={e => setEditProjectForm({ ...editProjectForm, teamMembers: e.target.value })}
+                  className="w-full bg-[#161619] border border-gray-700 p-2.5 text-xs text-white outline-none focus:border-emerald-500"
+                />
+
+                {/* Chips of added members */}
+                {editProjectForm.teamMembers && (
+                  <div className="flex flex-wrap items-center gap-1.5 mt-2">
+                    <span className="text-[10px] text-gray-400 font-['Space_Mono'] uppercase mr-1">
+                      Equipe ({editProjectForm.teamMembers.split(',').filter(s => s.trim()).length}):
+                    </span>
+                    {editProjectForm.teamMembers.split(',').map(s => s.trim()).filter(Boolean).map(memberName => (
+                      <span 
+                        key={memberName}
+                        className="inline-flex items-center gap-1.5 px-2 py-0.5 bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 text-[11px] rounded"
+                      >
+                        <span>{memberName}</span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const updated = editProjectForm.teamMembers
+                              .split(',')
+                              .map(s => s.trim())
+                              .filter(m => m !== memberName)
+                              .join(', ');
+                            setEditProjectForm({ ...editProjectForm, teamMembers: updated });
+                            toast.success(`"${memberName}" removido(a) da equipe`);
+                          }}
+                          className="hover:text-red-400 cursor-pointer p-0.5 transition-colors"
+                          title="Remover da equipe"
+                        >
+                          <X size={11} />
+                        </button>
+                      </span>
+                    ))}
+                    {editProjectForm.teamMembers.split(',').filter(s => s.trim()).length > 1 && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEditProjectForm({ ...editProjectForm, teamMembers: '' });
+                          toast.success('Membros da equipe limpos');
+                        }}
+                        className="text-[10px] text-gray-500 hover:text-red-400 font-['Space_Mono'] underline cursor-pointer ml-1"
+                      >
+                        Limpar todos
+                      </button>
+                    )}
+                  </div>
+                )}
+
+                {/* Dashboard Member Filter Box for Super Admin and Membro do Diretório */}
+                {canEditGames && isEditMemberFilterOpen && (
+                  <div className="mt-3 p-3.5 bg-gray-950 border border-emerald-500/50 rounded shadow-xl space-y-3">
+                    <div className="flex items-center justify-between pb-2 border-b border-gray-800">
+                      <div className="flex items-center gap-2">
+                        <Users size={16} className="text-emerald-400" />
+                        <div>
+                          <span className="text-xs font-bold text-white uppercase font-['Syne'] block">
+                            Filtro de Membros da Equipe (Base do Dashboard / Diretório)
+                          </span>
+                          <span className="text-[10px] text-gray-400 font-['Space_Mono'] block">
+                            Super Admin e Membros do Diretório podem buscar, filtrar e adicionar membros com 1 clique
+                          </span>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setIsEditMemberFilterOpen(false)}
+                        className="text-gray-400 hover:text-white p-1 text-xs"
+                        title="Fechar filtro"
+                      >
+                        <X size={16} />
+                      </button>
+                    </div>
+
+                    {/* Filter Inputs: Search + Role + Status */}
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                      <div className="relative">
+                        <input
+                          type="text"
+                          placeholder="Buscar por nome, e-mail ou discord..."
+                          value={editMemberSearchQuery}
+                          onChange={e => setEditMemberSearchQuery(e.target.value)}
+                          className="w-full bg-[#161619] border border-gray-700 py-1.5 pl-2.5 pr-6 text-white text-[11px] outline-none focus:border-emerald-500 font-['Space_Mono']"
+                        />
+                        {editMemberSearchQuery && (
+                          <button
+                            type="button"
+                            onClick={() => setEditMemberSearchQuery('')}
+                            className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-white cursor-pointer"
+                          >
+                            <X size={12} />
+                          </button>
+                        )}
+                      </div>
+
+                      <select
+                        value={editMemberRoleFilter}
+                        onChange={e => setEditMemberRoleFilter(e.target.value)}
+                        className="w-full bg-[#161619] border border-gray-700 py-1.5 px-2 text-white text-[11px] outline-none focus:border-emerald-500 cursor-pointer font-['Space_Mono']"
+                      >
+                        <option value="all">Todas as Funções ({registeredMembers.length})</option>
+                        {distinctMemberRoles.map(role => (
+                          <option key={role} value={role}>{role}</option>
+                        ))}
+                      </select>
+
+                      <select
+                        value={editMemberProjectFilter}
+                        onChange={e => setEditMemberProjectFilter(e.target.value as any)}
+                        className="w-full bg-[#161619] border border-gray-700 py-1.5 px-2 text-white text-[11px] outline-none focus:border-emerald-500 cursor-pointer font-['Space_Mono']"
+                      >
+                        <option value="all">Todos os Status</option>
+                        <option value="available">🌱 Sem Projeto (Disponíveis)</option>
+                        <option value="in_project">🎮 Já em Projeto</option>
+                      </select>
+                    </div>
+
+                    {/* Quick Filter Shortcut Pills (Dashboard Style) */}
+                    <div className="flex flex-wrap items-center gap-1.5 pt-1 text-[10px] font-['Space_Mono']">
+                      <span className="text-gray-500 mr-1">Atalhos:</span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEditMemberRoleFilter('all');
+                          setEditMemberProjectFilter('all');
+                          setEditMemberSearchQuery('');
+                        }}
+                        className={`px-2 py-0.5 border transition-colors cursor-pointer rounded ${
+                          editMemberRoleFilter === 'all' && editMemberProjectFilter === 'all' && !editMemberSearchQuery
+                            ? 'bg-emerald-500 text-gray-950 font-bold border-emerald-500'
+                            : 'bg-gray-900 text-gray-400 hover:text-white border-gray-800'
+                        }`}
+                      >
+                        Todos ({registeredMembers.length})
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEditMemberProjectFilter(editMemberProjectFilter === 'available' ? 'all' : 'available');
+                        }}
+                        className={`px-2 py-0.5 border transition-colors cursor-pointer rounded ${
+                          editMemberProjectFilter === 'available'
+                            ? 'bg-emerald-500/20 text-emerald-300 font-bold border-emerald-500/40'
+                            : 'bg-gray-900 text-gray-400 hover:text-emerald-400 border-gray-800'
+                        }`}
+                      >
+                        🌱 Sem Projeto
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEditMemberProjectFilter(editMemberProjectFilter === 'in_project' ? 'all' : 'in_project');
+                        }}
+                        className={`px-2 py-0.5 border transition-colors cursor-pointer rounded ${
+                          editMemberProjectFilter === 'in_project'
+                            ? 'bg-amber-500/20 text-amber-300 font-bold border-amber-500/40'
+                            : 'bg-gray-900 text-gray-400 hover:text-amber-400 border-gray-800'
+                        }`}
+                      >
+                        🎮 Em Projeto
+                      </button>
+                      {['Programação', 'Arte', 'Game Design', 'Som', 'RH'].map(r => (
+                        <button
+                          key={r}
+                          type="button"
+                          onClick={() => {
+                            setEditMemberRoleFilter(editMemberRoleFilter === r ? 'all' : r);
+                          }}
+                          className={`px-2 py-0.5 border transition-colors cursor-pointer rounded ${
+                            editMemberRoleFilter === r
+                              ? 'bg-emerald-500/20 text-emerald-300 font-bold border-emerald-500/40'
+                              : 'bg-gray-900 text-gray-400 hover:text-white border-gray-800'
+                          }`}
+                        >
+                          {r}
+                        </button>
+                      ))}
+                    </div>
+
+                    {/* Member Results List */}
+                    <div className="max-h-56 overflow-y-auto space-y-1.5 pr-1 scrollbar-thin scrollbar-thumb-gray-800 divide-y divide-gray-800/60">
+                      {(() => {
+                        const filtered = registeredMembers.filter(m => {
+                          if (m.status === 'Ex-membro') return false;
+                          if (editMemberSearchQuery.trim()) {
+                            const q = editMemberSearchQuery.toLowerCase().trim();
+                            const matchName = (m.name || '').toLowerCase().includes(q);
+                            const matchEmail = (m.email || '').toLowerCase().includes(q);
+                            const matchDiscord = (m.discordUser || '').toLowerCase().includes(q);
+                            const matchRole = (m.leagueRole || '').toLowerCase().includes(q);
+                            const matchCourse = (m.course || '').toLowerCase().includes(q);
+                            if (!matchName && !matchEmail && !matchDiscord && !matchRole && !matchCourse) return false;
+                          }
+                          if (editMemberRoleFilter !== 'all') {
+                            const mRoles = String(m.leagueRole || '').toLowerCase();
+                            if (!mRoles.includes(editMemberRoleFilter.toLowerCase())) return false;
+                          }
+                          if (editMemberProjectFilter === 'available') {
+                            const hasProj = m.isInProject === 'Sim' || (m.currentProjects && m.currentProjects.trim().length > 0 && m.currentProjects.toLowerCase() !== 'nenhum');
+                            if (hasProj) return false;
+                          } else if (editMemberProjectFilter === 'in_project') {
+                            const hasProj = m.isInProject === 'Sim' || (m.currentProjects && m.currentProjects.trim().length > 0 && m.currentProjects.toLowerCase() !== 'nenhum');
+                            if (!hasProj) return false;
+                          }
+                          return true;
+                        });
+
+                        if (filtered.length === 0) {
+                          return (
+                            <div className="text-center py-6 text-gray-500 text-xs font-['Space_Mono']">
+                              Nenhum membro encontrado com os filtros selecionados.
+                            </div>
+                          );
+                        }
+
+                        const currentTeamList = (editProjectForm.teamMembers || '')
+                          .split(',')
+                          .map(s => s.trim().toLowerCase())
+                          .filter(Boolean);
+
+                        return filtered.map(member => {
+                          const mName = (member.name || 'Membro').trim();
+                          const isAlreadyIn = currentTeamList.some(item => 
+                            item.includes(mName.toLowerCase()) || mName.toLowerCase().includes(item)
+                          );
+                          const primaryRole = member.leagueRole ? String(member.leagueRole).split(',')[0].trim() : 'Membro';
+                          const hasProject = member.isInProject === 'Sim' || (member.currentProjects && member.currentProjects.trim().length > 0 && member.currentProjects.toLowerCase() !== 'nenhum');
+
+                          return (
+                            <div
+                              key={member.id}
+                              className={`flex items-center justify-between p-2.5 transition-colors rounded ${
+                                isAlreadyIn
+                                  ? 'bg-emerald-500/10 border border-emerald-500/40'
+                                  : 'bg-[#161619] border border-gray-800 hover:border-gray-700'
+                              }`}
+                            >
+                              <div className="min-w-0 pr-3">
+                                <div className="flex items-center gap-2 flex-wrap mb-1">
+                                  <span className="font-bold text-white text-xs">{mName}</span>
+                                  <span className="px-1.5 py-0.2 bg-gray-800 text-emerald-400 text-[10px] font-['Space_Mono'] font-bold rounded">
+                                    {primaryRole}
+                                  </span>
+                                  {hasProject ? (
+                                    <span className="text-[10px] text-amber-400/90 font-['Space_Mono'] bg-amber-500/10 px-1.5 py-0.2 rounded border border-amber-500/20">
+                                      🎮 Em: {member.currentProjects}
+                                    </span>
+                                  ) : (
+                                    <span className="text-[10px] text-emerald-400 font-['Space_Mono'] bg-emerald-500/10 px-1.5 py-0.2 rounded border border-emerald-500/20">
+                                      🌱 Disponível
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="flex items-center gap-2 text-[10px] text-gray-400 font-['Space_Mono'] flex-wrap">
+                                  {member.discordUser && <span>@{member.discordUser}</span>}
+                                  {member.email && <span className="text-gray-500">• {member.email}</span>}
+                                  {member.course && <span className="text-gray-500">• {member.course}</span>}
+                                </div>
+                              </div>
+
+                              <button
+                                type="button"
+                                onClick={() => handleToggleTeamMemberEdit(member)}
+                                className={`px-3 py-1.5 text-xs font-bold font-['Space_Mono'] transition-all cursor-pointer shrink-0 rounded flex items-center gap-1.5 ${
+                                  isAlreadyIn
+                                    ? 'bg-emerald-500 text-gray-950 hover:bg-red-500 hover:text-white shadow-sm'
+                                    : 'bg-emerald-500/10 hover:bg-emerald-500 text-emerald-300 hover:text-gray-950 border border-emerald-500/30'
+                                }`}
+                              >
+                                {isAlreadyIn ? (
+                                  <>
+                                    <Check size={13} />
+                                    <span>Na Equipe</span>
+                                  </>
+                                ) : (
+                                  <>
+                                    <UserPlus size={13} />
+                                    <span>+ Adicionar</span>
+                                  </>
+                                )}
+                              </button>
+                            </div>
+                          );
+                        });
+                      })()}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <div className="flex justify-end gap-2 pt-3 border-t border-gray-800">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsEditProjectModalOpen(false);
+                    setEditingProject(null);
+                  }}
+                  className="px-4 py-2 bg-gray-800 text-gray-300 hover:text-white cursor-pointer"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  disabled={isSavingProjectEdit}
+                  className="px-5 py-2 bg-emerald-500 hover:bg-emerald-400 text-gray-950 font-bold cursor-pointer flex items-center gap-1.5"
+                >
+                  {isSavingProjectEdit ? 'Salvando...' : 'Salvar Alterações'}
                 </button>
               </div>
             </form>
