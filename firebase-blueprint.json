@@ -56,7 +56,10 @@
         "hasReceivedWelcomeEmail": { "type": "boolean" },
         "lastEmailSentAt": { "type": "number" },
         "lastEventEndDate": { "type": "number" },
-        "theme": { "type": "string", "enum": ["light", "dark"] }
+        "theme": { "type": "string", "enum": ["light", "dark"] },
+        "isRH": { "type": "boolean" },
+        "isDiretorio": { "type": "boolean" },
+        "leagueRole": { "type": "string", "maxLength": 255 }
       },
       "required": ["hasReceivedWelcomeEmail", "lastEmailSentAt", "lastEventEndDate"]
     },
@@ -181,6 +184,29 @@
         "createdAt": { "type": "number" }
       },
       "required": ["proposerName", "proposerEmail", "projectTitle", "oneSentencePitch", "status", "createdAt"]
+    },
+    "Doubt": {
+      "title": "Member Doubt",
+      "description": "Questions and doubts submitted by members to the directory members, with private answers.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "maxLength": 128 },
+        "authorName": { "type": "string", "maxLength": 255 },
+        "authorEmail": { "type": "string", "maxLength": 255 },
+        "authorDiscord": { "type": "string", "maxLength": 100 },
+        "authorRole": { "type": "string", "maxLength": 255 },
+        "category": { "type": "string", "maxLength": 100 },
+        "title": { "type": "string", "maxLength": 300 },
+        "description": { "type": "string", "maxLength": 5000 },
+        "priority": { "type": "string", "maxLength": 50 },
+        "status": { "type": "string", "enum": ["pendente", "em_analise", "respondida"] },
+        "response": { "type": "string", "maxLength": 5000 },
+        "answeredBy": { "type": "string", "maxLength": 255 },
+        "answeredByRole": { "type": "string", "maxLength": 100 },
+        "answeredAt": { "type": "number" },
+        "createdAt": { "type": "number" }
+      },
+      "required": ["userId", "authorName", "authorEmail", "title", "description", "status", "createdAt"]
     }
   },
   "firestore": {
@@ -219,6 +245,10 @@
     "/proposals/{proposalId}": {
       "schema": "Proposal",
       "description": "New game project proposals evaluated by the board."
+    },
+    "/doubts/{doubtId}": {
+      "schema": "Doubt",
+      "description": "Questions and doubts submitted by members to the directory members."
     }
   }
 }

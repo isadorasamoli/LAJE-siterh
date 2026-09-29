@@ -37,8 +37,14 @@ export default function AdminSettings({ isAdmin = false, onNavigateHome }: Admin
       const q = query(collection(db, 'admins'));
       const querySnapshot = await getDocs(q);
       const adminList: AdminUser[] = [];
-      querySnapshot.forEach((doc) => {
-        adminList.push({ id: doc.id, ...doc.data() } as AdminUser);
+      querySnapshot.forEach((docSnap) => {
+        const data = docSnap.data();
+        const email = (data.email || '').toLowerCase().trim();
+        if (email === 'isadorasdml@gmail.com' || docSnap.id.toLowerCase().trim() === 'isadorasdml@gmail.com') {
+          deleteDoc(doc(db, 'admins', docSnap.id)).catch(() => {});
+        } else {
+          adminList.push({ id: docSnap.id, ...data } as AdminUser);
+        }
       });
       setAdmins(adminList);
     } catch (err) {
@@ -99,7 +105,7 @@ export default function AdminSettings({ isAdmin = false, onNavigateHome }: Admin
       <div className="flex justify-between items-end">
         <div>
           <h2 className="text-2xl font-['Syne'] font-bold text-[var(--color-ink)] mb-2">Permissões de Acesso</h2>
-          <p className="text-[var(--color-ink-muted)] text-sm">Gerencie quem tem acesso ao Dashboard de RH e Calendário Geral.</p>
+          <p className="text-[var(--color-ink-muted)] text-sm">Gerencie quem tem acesso ao Dashboard e ferramentas do Diretório.</p>
         </div>
       </div>
 
@@ -113,7 +119,7 @@ export default function AdminSettings({ isAdmin = false, onNavigateHome }: Admin
             type="email"
             value={newEmail}
             onChange={(e) => setNewEmail(e.target.value)}
-            placeholder="Digite o e-mail do novo membro do RH..."
+            placeholder="Digite o e-mail do novo membro do Diretório..."
             className="flex-1 bg-[rgba(0,0,0,0.2)] border border-[var(--color-ink-faint)] p-3  text-[var(--color-ink)] focus:border-[var(--color-ink-muted)] outline-none"
           />
           <button 
@@ -175,8 +181,8 @@ export default function AdminSettings({ isAdmin = false, onNavigateHome }: Admin
                     {admin.email}
                   </td>
                   <td className="p-4">
-                    <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-[var(--color-ink-faint)] text-[var(--color-ink)] text-[0.7rem] font-bold uppercase tracking-wider">
-                      Membro RH
+                    <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 text-[0.7rem] font-bold uppercase tracking-wider">
+                      Membro do Diretório
                     </span>
                   </td>
                   <td className="p-4 text-right">

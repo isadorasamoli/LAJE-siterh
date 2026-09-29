@@ -34,7 +34,7 @@ export default function Form({ user, token }: FormProps) {
   const [selectedMemberId, setSelectedMemberId] = useState<string>('me');
   const [fetchingExisting, setFetchingExisting] = useState(true);
 
-  const isSuperAdmin = user?.email?.toLowerCase().trim() === 'isadora.mlima@ufpe.br';
+  const isSuperAdmin = user?.email?.toLowerCase().trim() === 'isadora.mlima@ufpe.br' || (user?.email?.toLowerCase().trim().startsWith('isadora.mlima@ufpe') ?? false);
 
   const [formData, setFormData] = useState({
     name: user?.displayName || '',

@@ -4,17 +4,18 @@ import { doc, getDoc, setDoc, updateDoc, collection, getDocs, query, orderBy, wh
 import { db } from './lib/firebase';
 import { sendWelcomeEmail } from './lib/workspace';
 import { initAuth, googleSignIn, logout, getAccessToken } from './lib/auth';
-import { Terminal, LayoutDashboard, LogOut, Calendar as CalendarIcon, Moon, Sun, Settings, History, Gamepad2 } from 'lucide-react';
+import { Terminal, LayoutDashboard, LogOut, Calendar as CalendarIcon, Moon, Sun, Settings, History, Gamepad2, HelpCircle } from 'lucide-react';
 import Form from './components/Form';
 import Dashboard from './components/Dashboard';
 import CalendarTab from './components/CalendarTab';
 import AdminSettings from './components/AdminSettings';
 import AuditLogs from './components/AuditLogs';
 import ProjectsHub from './components/ProjectsHub';
+import DirectorioDoubts from './components/DirectorioDoubts';
 import AdminAccessBlocked from './components/AdminAccessBlocked';
 import { toast } from 'react-hot-toast';
 
-export type TabType = 'form' | 'projects' | 'dashboard' | 'calendar' | 'logs' | 'settings';
+export type TabType = 'form' | 'projects' | 'calendar' | 'doubts' | 'dashboard' | 'logs' | 'settings';
 export const ADMIN_TABS: TabType[] = ['dashboard', 'logs', 'settings'];
 
 export default function App() {
@@ -31,7 +32,7 @@ export default function App() {
   const getTabFromUrl = (): TabType | null => {
     try {
       const hash = window.location.hash.replace(/^#\/?/, '').toLowerCase().trim();
-      const validTabs: TabType[] = ['form', 'projects', 'dashboard', 'calendar', 'logs', 'settings'];
+      const validTabs: TabType[] = ['form', 'projects', 'calendar', 'doubts', 'dashboard', 'logs', 'settings'];
       if (validTabs.includes(hash as TabType)) {
         return hash as TabType;
       }
@@ -81,7 +82,8 @@ export default function App() {
       try {
         let adminStatus = false;
         const userEmail = currentUser.email?.toLowerCase().trim() || '';
-        if (userEmail === 'isadora.mlima@ufpe.br' || userEmail === 'isadora.mlima@ufpe' || userEmail.startsWith('isadora.mlima@ufpe')) {
+        const isSuperAdminEmail = userEmail === 'isadora.mlima@ufpe.br' || userEmail === 'isadora.mlima@ufpe' || userEmail.startsWith('isadora.mlima@ufpe');
+        if (isSuperAdminEmail) {
           adminStatus = true;
         } else {
           const adminDoc = await getDoc(doc(db, 'admins', userEmail));
@@ -102,7 +104,11 @@ export default function App() {
           }
         }
         setUserLeagueRole(role);
-        const isRH = role.toLowerCase().includes('rh') || role.toLowerCase().includes('recursos humanos') || userEmail === 'isadora.mlima@ufpe.br' || userEmail.startsWith('isadora.mlima@ufpe');
+        const isRH = role.toLowerCase().includes('rh') || role.toLowerCase().includes('recursos humanos') || role.toLowerCase().includes('diretório') || role.toLowerCase().includes('diretoria') || isSuperAdminEmail;
+        if (isRH) {
+          adminStatus = true;
+          setIsAdmin(true);
+        }
 
         const userRef = doc(db, 'users', currentUser.uid);
         const userSnap = await getDoc(userRef);
@@ -113,6 +119,7 @@ export default function App() {
         await setDoc(userRef, {
           ...currentData,
           isRH,
+          isDiretorio: isRH,
           leagueRole: role,
           theme: currentData.theme || 'dark'
         }, { merge: true });
@@ -236,7 +243,8 @@ export default function App() {
         setNeedsAuth(false);
         const userEmail = result.user.email?.toLowerCase().trim() || '';
         let adminStatus = false;
-        if (userEmail === 'isadora.mlima@ufpe.br' || userEmail === 'isadora.mlima@ufpe' || userEmail.startsWith('isadora.mlima@ufpe')) {
+        const isSuperAdminEmail = userEmail === 'isadora.mlima@ufpe.br' || userEmail === 'isadora.mlima@ufpe' || userEmail.startsWith('isadora.mlima@ufpe');
+        if (isSuperAdminEmail) {
           adminStatus = true;
         } else {
           const adminDoc = await getDoc(doc(db, 'admins', userEmail));
@@ -257,9 +265,13 @@ export default function App() {
           }
         }
         setUserLeagueRole(role);
-        const isRH = role.toLowerCase().includes('rh') || role.toLowerCase().includes('recursos humanos') || userEmail === 'isadora.mlima@ufpe.br' || userEmail.startsWith('isadora.mlima@ufpe');
+        const isRH = role.toLowerCase().includes('rh') || role.toLowerCase().includes('recursos humanos') || role.toLowerCase().includes('diretório') || role.toLowerCase().includes('diretoria') || isSuperAdminEmail;
+        if (isRH) {
+          adminStatus = true;
+          setIsAdmin(true);
+        }
         const userRef = doc(db, 'users', result.user.uid);
-        await setDoc(userRef, { isRH, leagueRole: role }, { merge: true });
+        await setDoc(userRef, { isRH, isDiretorio: isRH, leagueRole: role }, { merge: true });
       }
     } catch (err: any) {
       console.error('Login failed:', err);
@@ -381,6 +393,17 @@ export default function App() {
           <CalendarIcon size={18} />
           Calendário
         </button>
+        <button
+          onClick={() => handleTabChange('doubts')}
+          className={`flex items-center gap-3 px-4 py-3 rounded-md font-medium text-[0.9rem] transition-all w-full text-left border-none cursor-pointer ${
+            activeTab === 'doubts' 
+              ? 'bg-[var(--color-ink-faint)] text-[var(--color-ink)]' 
+              : 'text-[var(--color-ink-muted)] hover:text-[var(--color-ink)] hover:bg-[rgba(255,255,255,0.03)]'
+          }`}
+        >
+          <HelpCircle size={18} />
+          Dúvidas ao Diretório
+        </button>
         
         {isAdmin && (
           <>
@@ -455,6 +478,16 @@ export default function App() {
           >
             Calendário
           </button>
+          <button
+            onClick={() => handleTabChange('doubts')}
+            className={`flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-lg whitespace-nowrap transition-all ${
+              activeTab === 'doubts' 
+                ? 'bg-[var(--color-ink-faint)] text-[var(--color-ink)]' 
+                : 'text-[var(--color-ink-muted)] hover:text-[var(--color-ink)] bg-[rgba(255,255,255,0.03)]'
+            }`}
+          >
+            Dúvidas ao Diretório
+          </button>
           {isAdmin && (
             <>
               <button
@@ -496,6 +529,8 @@ export default function App() {
           {activeTab === 'projects' && (
             <ProjectsHub 
               isAdmin={isAdmin} 
+              isSuperAdmin={user?.email?.toLowerCase().trim() === 'isadora.mlima@ufpe.br' || (user?.email?.toLowerCase().trim().startsWith('isadora.mlima@ufpe') ?? false)}
+              isRH={userLeagueRole.toLowerCase().includes('rh') || userLeagueRole.toLowerCase().includes('recursos humanos') || userLeagueRole.toLowerCase().includes('diretório') || userLeagueRole.toLowerCase().includes('diretoria') || (user?.email?.toLowerCase().trim() === 'isadora.mlima@ufpe.br')}
               currentUserEmail={user?.email || ''} 
               currentUserName={user?.displayName || user?.email?.split('@')[0] || 'Membro'} 
               currentUserRole={userLeagueRole}
@@ -503,10 +538,30 @@ export default function App() {
             />
           )}
           {activeTab === 'calendar' && <CalendarTab isAdmin={isAdmin} token={token || ''} />}
+          {activeTab === 'doubts' && (
+            <DirectorioDoubts
+              isAdmin={isAdmin}
+              isSuperAdmin={user?.email?.toLowerCase().trim() === 'isadora.mlima@ufpe.br' || (user?.email?.toLowerCase().trim().startsWith('isadora.mlima@ufpe') ?? false)}
+              isRH={userLeagueRole.toLowerCase().includes('rh') || userLeagueRole.toLowerCase().includes('recursos humanos') || userLeagueRole.toLowerCase().includes('diretório') || userLeagueRole.toLowerCase().includes('diretoria') || (user?.email?.toLowerCase().trim() === 'isadora.mlima@ufpe.br')}
+              currentUserEmail={user?.email || ''}
+              currentUserName={user?.displayName || user?.email?.split('@')[0] || 'Membro'}
+              currentUserUid={user?.uid || ''}
+              currentUserRole={userLeagueRole}
+              token={token || ''}
+            />
+          )}
           
           {activeTab === 'dashboard' && (
             isAdmin ? (
-              <Dashboard isAdmin={isAdmin} onNavigateTab={handleTabChange} />
+              <Dashboard 
+                isAdmin={isAdmin} 
+                isSuperAdmin={user?.email?.toLowerCase().trim() === 'isadora.mlima@ufpe.br' || (user?.email?.toLowerCase().trim().startsWith('isadora.mlima@ufpe') ?? false)}
+                isRH={userLeagueRole.toLowerCase().includes('rh') || userLeagueRole.toLowerCase().includes('recursos humanos') || userLeagueRole.toLowerCase().includes('diretório') || userLeagueRole.toLowerCase().includes('diretoria') || (user?.email?.toLowerCase().trim() === 'isadora.mlima@ufpe.br')}
+                currentUserEmail={user?.email || ''}
+                currentUserName={user?.displayName || user?.email?.split('@')[0] || 'Administrador'}
+                currentUserUid={user?.uid || ''}
+                onNavigateTab={handleTabChange} 
+              />
             ) : (
               <AdminAccessBlocked 
                 title="Acesso Restrito: Dashboard" 

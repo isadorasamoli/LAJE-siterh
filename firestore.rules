@@ -31,8 +31,9 @@ service cloud.firestore {
         )) ||
         (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && (
           get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isRH == true ||
+          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isDiretorio == true ||
           (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.leagueRole != null &&
-           get(/databases/$(database)/documents/users/$(request.auth.uid)).data.leagueRole.matches('.*(RH|Recursos Humanos).*'))
+           get(/databases/$(database)/documents/users/$(request.auth.uid)).data.leagueRole.matches('.*(RH|Recursos Humanos|Diretoria|Diretório|Diretoria).*'))
         ))
       );
     }
@@ -101,6 +102,7 @@ service cloud.firestore {
         && (!data.keys().hasAny(['lastEventEndDate']) || data.lastEventEndDate is number)
         && (!data.keys().hasAny(['theme']) || data.theme in ['light', 'dark'])
         && (!data.keys().hasAny(['isRH']) || data.isRH is bool)
+        && (!data.keys().hasAny(['isDiretorio']) || data.isDiretorio is bool)
         && (!data.keys().hasAny(['leagueRole']) || (data.leagueRole is string && data.leagueRole.size() <= 255));
     }
 
@@ -163,20 +165,39 @@ service cloud.firestore {
         && data.createdAt is number;
     }
 
+    function isValidDoubt(data) {
+      return data.keys().hasAll(['userId', 'authorName', 'authorEmail', 'title', 'description', 'status', 'createdAt'])
+        && data.userId is string && data.userId.size() <= 128
+        && data.authorName is string && data.authorName.size() <= 255
+        && data.authorEmail is string && data.authorEmail.size() <= 255
+        && (!data.keys().hasAny(['authorDiscord']) || (data.authorDiscord is string && data.authorDiscord.size() <= 100))
+        && (!data.keys().hasAny(['authorRole']) || (data.authorRole is string && data.authorRole.size() <= 255))
+        && (!data.keys().hasAny(['category']) || (data.category is string && data.category.size() <= 100))
+        && data.title is string && data.title.size() <= 300
+        && data.description is string && data.description.size() <= 5000
+        && (!data.keys().hasAny(['priority']) || (data.priority is string && data.priority.size() <= 50))
+        && data.status in ['pendente', 'em_analise', 'respondida']
+        && (!data.keys().hasAny(['response']) || (data.response is string && data.response.size() <= 5000))
+        && (!data.keys().hasAny(['answeredBy']) || (data.answeredBy is string && data.answeredBy.size() <= 255))
+        && (!data.keys().hasAny(['answeredByRole']) || (data.answeredByRole is string && data.answeredByRole.size() <= 100))
+        && (!data.keys().hasAny(['answeredAt']) || data.answeredAt is number)
+        && data.createdAt is number;
+    }
+
     // 4. Match Blocks
     match /responses/{responseId} {
       allow read: if isSignedIn();
       
       allow create: if isSignedIn()
         && isValidId(responseId)
-        && incoming().userId == request.auth.uid
+        && (isRHorSuperAdmin() || incoming().userId == request.auth.uid)
         && isValidResponse(incoming());
         
       allow update: if isSignedIn()
-        && (isAdmin() || (incoming().userId == existing().userId && existing().userId == request.auth.uid))
+        && (isRHorSuperAdmin() || (incoming().userId == existing().userId && existing().userId == request.auth.uid))
         && isValidResponse(incoming());
         
-      allow delete: if isAdmin();
+      allow delete: if isRHorSuperAdmin();
     }
 
     match /events/{eventId} {
@@ -259,6 +280,23 @@ service cloud.firestore {
       allow update: if isAdmin()
         && isValidProposal(incoming());
       allow delete: if isAdmin();
+    }
+
+    match /doubts/{doubtId} {
+      // Dúvidas de outros membros NÃO ficam públicas para membros comuns;
+      // Membros comuns só leem as suas próprias; Super Admin e Membros do Diretório leem todas.
+      allow read: if isSignedIn() && (isRHorSuperAdmin() || resource.data.userId == request.auth.uid);
+      
+      allow create: if isSignedIn()
+        && isValidId(doubtId)
+        && incoming().userId == request.auth.uid
+        && isValidDoubt(incoming());
+        
+      allow update: if isSignedIn()
+        && (isRHorSuperAdmin() || (existing().userId == request.auth.uid && existing().status == 'pendente'))
+        && isValidDoubt(incoming());
+        
+      allow delete: if isSignedIn() && (isRHorSuperAdmin() || existing().userId == request.auth.uid);
     }
   }
 }

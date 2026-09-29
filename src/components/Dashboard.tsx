@@ -1,9 +1,9 @@
 import React, { useEffect, useState, useRef } from 'react';
-import { collection, getDocs, doc, updateDoc, deleteDoc, deleteField } from 'firebase/firestore';
+import { collection, getDocs, doc, updateDoc, deleteDoc, deleteField, setDoc } from 'firebase/firestore';
 import { db } from '../lib/firebase';
 import { handleFirestoreError, OperationType } from '../lib/utils';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell, LabelList } from 'recharts';
-import { Loader2, Users, Target, Activity, X, Search, Download, FileText, Trash2, Edit2, Cake, Gift, Calendar as CalendarIcon, PartyPopper, Sparkles, ChevronLeft, ChevronRight, Mail, Copy, Bell, BellRing, Check, History, Gamepad2, Briefcase, Kanban, Filter, RotateCcw, SlidersHorizontal, CheckCircle2 } from 'lucide-react';
+import { Loader2, Users, Target, Activity, X, Search, Download, FileText, Trash2, Edit2, Cake, Gift, Calendar as CalendarIcon, PartyPopper, Sparkles, ChevronLeft, ChevronRight, Mail, Copy, Bell, BellRing, Check, History, Gamepad2, Briefcase, Kanban, Filter, RotateCcw, SlidersHorizontal, CheckCircle2, UserPlus } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
@@ -13,10 +13,23 @@ import AdminAccessBlocked from './AdminAccessBlocked';
 
 interface DashboardProps {
   isAdmin?: boolean;
+  isSuperAdmin?: boolean;
+  isRH?: boolean;
+  currentUserEmail?: string;
+  currentUserName?: string;
+  currentUserUid?: string;
   onNavigateTab?: (tab: 'form' | 'projects' | 'dashboard' | 'calendar' | 'logs' | 'settings') => void;
 }
 
-export default function Dashboard({ isAdmin = false, onNavigateTab }: DashboardProps) {
+export default function Dashboard({ 
+  isAdmin = false, 
+  isSuperAdmin: propIsSuperAdmin,
+  isRH: propIsRH,
+  currentUserEmail = '',
+  currentUserName = '',
+  currentUserUid = '',
+  onNavigateTab 
+}: DashboardProps) {
   if (!isAdmin) {
     return (
       <AdminAccessBlocked 
@@ -25,6 +38,16 @@ export default function Dashboard({ isAdmin = false, onNavigateTab }: DashboardP
       />
     );
   }
+
+  const isSuperAdmin = propIsSuperAdmin !== undefined 
+    ? propIsSuperAdmin 
+    : (currentUserEmail.toLowerCase().trim() === 'isadora.mlima@ufpe.br' || currentUserEmail.toLowerCase().trim().startsWith('isadora.mlima@ufpe'));
+
+  const isRH = propIsRH !== undefined 
+    ? propIsRH 
+    : true;
+
+  const isAuthorizedToAddMember = isSuperAdmin || isRH || isAdmin;
 
   const [data, setData] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -47,6 +70,34 @@ export default function Dashboard({ isAdmin = false, onNavigateTab }: DashboardP
   const [isEditResponsesOpen, setIsEditResponsesOpen] = useState(false);
   const [editingFormData, setEditingFormData] = useState<any>({});
   const [isSavingResponseEdit, setIsSavingResponseEdit] = useState(false);
+
+  // Estado para cadastro de novo membro via filtro do Dashboard
+  const [isAddMemberOpen, setIsAddMemberOpen] = useState(false);
+  const [isAddingMember, setIsAddingMember] = useState(false);
+  const [newMemberForm, setNewMemberForm] = useState({
+    name: '',
+    email: '',
+    discordUser: '',
+    birthday: '',
+    course: 'Ciência da Computação',
+    period: '1º período',
+    collegeFocus: 3,
+    leagueRole: 'Programação',
+    leagueFocus: 3,
+    weeklyHours: '4h',
+    roleFocus: '',
+    learningFocus: '',
+    isInProject: 'Sim',
+    currentProjects: '',
+    notInProjectStatus: 'Quero entrar em um projeto e estou procurando',
+    interestedProjects: '',
+    attendancePreference: 'Sim, sem problema',
+    microtasksInterest: 'Sim, me avisem quando abrir',
+    priority: 'Média',
+    progress: 0,
+    deadline: '',
+    status: 'Ativo' as 'Ativo' | 'Ex-membro',
+  });
 
   const fetchData = async () => {
     try {
@@ -1020,6 +1071,179 @@ export default function Dashboard({ isAdmin = false, onNavigateTab }: DashboardP
     }
   };
 
+  const handleOpenAddMember = (prefill?: {
+    name?: string;
+    email?: string;
+    role?: string;
+    project?: string;
+  }) => {
+    let defaultName = '';
+    let defaultEmail = '';
+    const queryStr = searchQuery.trim();
+    if (queryStr) {
+      if (queryStr.includes('@')) {
+        defaultEmail = queryStr;
+      } else {
+        defaultName = queryStr;
+      }
+    }
+
+    let defaultRole = roleFilter !== 'all' ? roleFilter : 'Programação';
+    let defaultIsInProject = 'Sim';
+    let defaultCurrentProjects = '';
+    let defaultNotInProjectStatus = 'Quero entrar em um projeto e estou procurando';
+
+    if (projectStatusFilter.startsWith('project:')) {
+      defaultCurrentProjects = projectStatusFilter.replace('project:', '');
+      defaultIsInProject = 'Sim';
+    } else if (projectStatusFilter === 'no_project') {
+      defaultIsInProject = 'Não';
+      defaultCurrentProjects = '';
+    } else if (projectStatusFilter === 'waiting_invite') {
+      defaultIsInProject = 'Não';
+      defaultNotInProjectStatus = 'Quero entrar em um projeto e estou procurando';
+    } else if (projectStatusFilter === 'observing') {
+      defaultIsInProject = 'Não';
+      defaultNotInProjectStatus = 'Só quero acompanhar por curiosidade';
+    }
+
+    if (prefill) {
+      if (prefill.name !== undefined) defaultName = prefill.name;
+      if (prefill.email !== undefined) defaultEmail = prefill.email;
+      if (prefill.role !== undefined && prefill.role) defaultRole = prefill.role;
+      if (prefill.project !== undefined) {
+        defaultCurrentProjects = prefill.project;
+        defaultIsInProject = 'Sim';
+      }
+    }
+
+    setNewMemberForm({
+      name: defaultName,
+      email: defaultEmail,
+      discordUser: '',
+      birthday: '',
+      course: 'Ciência da Computação',
+      period: '1º período',
+      collegeFocus: 3,
+      leagueRole: defaultRole,
+      leagueFocus: 3,
+      weeklyHours: '4h',
+      roleFocus: '',
+      learningFocus: '',
+      isInProject: defaultIsInProject,
+      currentProjects: defaultCurrentProjects,
+      notInProjectStatus: defaultNotInProjectStatus,
+      interestedProjects: '',
+      attendancePreference: 'Sim, sem problema',
+      microtasksInterest: 'Sim, me avisem quando abrir',
+      priority: 'Média',
+      progress: 0,
+      deadline: '',
+      status: 'Ativo',
+    });
+
+    setIsAddMemberOpen(true);
+  };
+
+  const handleSaveNewMember = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!isAuthorizedToAddMember) {
+      toast.error('Apenas Super Admin e Membros do Diretório podem adicionar novos membros à equipe.');
+      return;
+    }
+
+    const trimmedName = newMemberForm.name.trim();
+    const cleanEmail = newMemberForm.email.trim().toLowerCase();
+
+    if (!trimmedName) {
+      toast.error('Informe o nome completo do membro');
+      return;
+    }
+    if (!cleanEmail || !cleanEmail.includes('@')) {
+      toast.error('Informe um e-mail válido para o membro');
+      return;
+    }
+    if (!newMemberForm.leagueRole.trim()) {
+      toast.error('Selecione pelo menos uma função/área na LAJE');
+      return;
+    }
+
+    // Check duplicate email
+    const existing = data.find(m => (m.email || '').toLowerCase().trim() === cleanEmail);
+    if (existing) {
+      toast.error(`Já existe um cadastro com o e-mail ${cleanEmail} (${existing.name})`);
+      return;
+    }
+
+    try {
+      setIsAddingMember(true);
+      const newDocRef = doc(collection(db, 'responses'));
+      const newId = newDocRef.id;
+      const generatedUserId = `usr_${newId}`;
+
+      const payload = {
+        userId: generatedUserId,
+        name: trimmedName,
+        email: cleanEmail,
+        discordUser: (newMemberForm.discordUser || '').replace(/^@+/, '').trim(),
+        birthday: newMemberForm.birthday || '',
+        course: newMemberForm.course.trim() || 'Ciência da Computação',
+        period: newMemberForm.period.trim() || '1º período',
+        collegeFocus: Number(newMemberForm.collegeFocus || 3),
+        leagueRole: newMemberForm.leagueRole.trim() || 'Programação',
+        leagueFocus: Number(newMemberForm.leagueFocus || 3),
+        weeklyHours: newMemberForm.weeklyHours || '4h',
+        roleFocus: newMemberForm.roleFocus.trim() || '',
+        learningFocus: newMemberForm.learningFocus.trim() || '',
+        isInProject: newMemberForm.isInProject || (newMemberForm.currentProjects ? 'Sim' : 'Não'),
+        currentProjects: newMemberForm.currentProjects.trim() || '',
+        notInProjectStatus: newMemberForm.notInProjectStatus.trim() || '',
+        interestedProjects: newMemberForm.interestedProjects.trim() || '',
+        attendancePreference: newMemberForm.attendancePreference || 'Sim, sem problema',
+        microtasksInterest: newMemberForm.microtasksInterest || 'Sim, me avisem quando abrir',
+        priority: newMemberForm.priority || 'Média',
+        progress: Number(newMemberForm.progress || 0),
+        deadline: newMemberForm.deadline || '',
+        status: newMemberForm.status || 'Ativo',
+        createdAt: Date.now(),
+        lastEditedAt: Date.now(),
+        lastEditedBy: currentUserEmail || (isSuperAdmin ? 'isadora.mlima@ufpe.br' : 'Membro do Diretório'),
+        editAuthorized: true,
+      };
+
+      await setDoc(newDocRef, payload);
+
+      await logAuditAction({
+        action: 'Cadastro de Membro',
+        targetMemberId: newId,
+        targetMemberName: payload.name,
+        targetMemberEmail: payload.email,
+        performedByEmail: currentUserEmail || (isSuperAdmin ? 'isadora.mlima@ufpe.br' : 'Membro do Diretório'),
+        performedByName: currentUserName || (isSuperAdmin ? 'Super Admin' : 'Membro do Diretório'),
+        performedByUid: currentUserUid || '',
+        details: `Novo membro "${payload.name}" (${payload.email}) cadastrado na equipe via filtro do Dashboard por ${currentUserName || currentUserEmail || 'Diretório'}`,
+        newValue: JSON.stringify({
+          name: payload.name,
+          email: payload.email,
+          role: payload.leagueRole,
+          projects: payload.currentProjects,
+          status: payload.status
+        })
+      });
+
+      const newRecord = { id: newId, ...payload };
+      setData(prev => [newRecord, ...prev]);
+      toast.success(`Membro "${payload.name}" adicionado à equipe com sucesso!`);
+      setIsAddMemberOpen(false);
+    } catch (err) {
+      console.error('Erro ao adicionar membro à equipe:', err);
+      handleFirestoreError(err, OperationType.CREATE, 'responses');
+      toast.error('Erro ao adicionar membro à equipe');
+    } finally {
+      setIsAddingMember(false);
+    }
+  };
+
   return (
     <div className="w-full max-w-5xl mx-auto space-y-8 pb-12">
       {/* Search & Filters Hub */}
@@ -1040,8 +1264,20 @@ export default function Dashboard({ isAdmin = false, onNavigateTab }: DashboardP
             </div>
           </div>
 
-          {/* Small Alert Icon / Status in Dashboard Header */}
-          <div className="relative flex items-center gap-3 shrink-0 self-end sm:self-auto">
+          {/* Small Alert Icon / Status in Dashboard Header & Add Member Button */}
+          <div className="relative flex flex-wrap items-center gap-3 shrink-0 self-start sm:self-auto">
+            {isAuthorizedToAddMember && (
+              <button
+                type="button"
+                onClick={() => handleOpenAddMember()}
+                className="flex items-center gap-2 px-3.5 py-2.5 bg-emerald-500 hover:bg-emerald-400 text-gray-950 font-bold text-xs font-['Space_Mono'] uppercase tracking-wider transition-all duration-200 shadow-[0_0_15px_rgba(16,185,129,0.3)] cursor-pointer shrink-0"
+                title="Cadastrar novo membro na equipe (Super Admin / Membro do Diretório)"
+              >
+                <UserPlus size={15} />
+                <span>+ Adicionar Membro</span>
+              </button>
+            )}
+
             {activeTodayBirthdays.length > 0 ? (
               <div className="relative">
                 <button
@@ -1174,6 +1410,23 @@ export default function Dashboard({ isAdmin = false, onNavigateTab }: DashboardP
                 </button>
               )}
             </div>
+            {searchQuery.trim().length > 0 && isAuthorizedToAddMember && (
+              <div className="flex items-center justify-between text-[11px] font-['Space_Mono'] mt-1.5 px-0.5">
+                <span className="text-gray-500 truncate text-[10px]">Filtro: "{searchQuery}"</span>
+                <button
+                  type="button"
+                  onClick={() => handleOpenAddMember({
+                    name: searchQuery.includes('@') ? '' : searchQuery,
+                    email: searchQuery.includes('@') ? searchQuery : ''
+                  })}
+                  className="text-emerald-400 hover:text-emerald-300 font-semibold flex items-center gap-1 cursor-pointer shrink-0 ml-1.5 underline text-[10px]"
+                  title={`Adicionar "${searchQuery}" como membro da equipe`}
+                >
+                  <UserPlus size={11} />
+                  <span>+ Adicionar "{searchQuery}"</span>
+                </button>
+              </div>
+            )}
           </div>
 
           {/* 2. Função Atual */}
@@ -1359,6 +1612,17 @@ export default function Dashboard({ isAdmin = false, onNavigateTab }: DashboardP
           >
             📋 Ex-membros
           </button>
+          {isAuthorizedToAddMember && (
+            <button
+              type="button"
+              onClick={() => handleOpenAddMember()}
+              className="ml-auto flex items-center gap-1.5 px-3 py-1 bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/40 text-emerald-300 hover:text-emerald-200 text-[11px] font-['Space_Mono'] font-bold transition-all cursor-pointer"
+              title="Adicionar novo membro usando os filtros selecionados"
+            >
+              <UserPlus size={12} />
+              <span>+ Adicionar com Filtros</span>
+            </button>
+          )}
         </div>
 
         {/* Results Counter and Active Filter Tags */}
@@ -2106,6 +2370,17 @@ export default function Dashboard({ isAdmin = false, onNavigateTab }: DashboardP
             <p className="text-sm text-gray-400">Clique em um membro para detalhes e histórico</p>
           </div>
           <div className="flex items-center gap-2 self-start sm:self-auto">
+            {isAuthorizedToAddMember && (
+              <button
+                type="button"
+                onClick={() => handleOpenAddMember()}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-500 hover:bg-emerald-400 text-gray-950 text-xs font-['Space_Mono'] font-bold transition-colors cursor-pointer shadow-sm"
+                title="Cadastrar novo membro da equipe"
+              >
+                <UserPlus size={13} />
+                <span>Novo Membro</span>
+              </button>
+            )}
             {isFilterActive && (
               <button
                 type="button"
@@ -2244,14 +2519,31 @@ export default function Dashboard({ isAdmin = false, onNavigateTab }: DashboardP
               <p className="text-xs text-gray-400 max-w-md mx-auto font-['Space_Mono']">
                 Nenhum registro corresponde aos critérios atuais (Nome: "{searchQuery || 'qualquer'}", Função: "{roleFilter === 'all' ? 'todas' : roleFilter}", Projeto: "{projectStatusFilter === 'all' ? 'todos' : projectStatusFilter}").
               </p>
-              <button
-                type="button"
-                onClick={handleClearFilters}
-                className="inline-flex items-center gap-2 px-4 py-2 bg-emerald-500 hover:bg-emerald-400 text-gray-950 font-['Space_Mono'] font-bold text-xs transition-colors cursor-pointer"
-              >
-                <RotateCcw size={13} />
-                Limpar Filtros e Ver Todos ({data.length})
-              </button>
+              <div className="flex flex-wrap items-center justify-center gap-2.5 pt-2">
+                <button
+                  type="button"
+                  onClick={handleClearFilters}
+                  className="inline-flex items-center gap-2 px-4 py-2 bg-gray-800 hover:bg-gray-700 text-gray-300 font-['Space_Mono'] font-bold text-xs transition-colors cursor-pointer border border-gray-700"
+                >
+                  <RotateCcw size={13} />
+                  Limpar Filtros e Ver Todos ({data.length})
+                </button>
+                {isAuthorizedToAddMember && (
+                  <button
+                    type="button"
+                    onClick={() => handleOpenAddMember({
+                      name: searchQuery.includes('@') ? '' : searchQuery,
+                      email: searchQuery.includes('@') ? searchQuery : '',
+                      role: roleFilter !== 'all' ? roleFilter : 'Programação',
+                      project: projectStatusFilter.startsWith('project:') ? projectStatusFilter.replace('project:', '') : ''
+                    })}
+                    className="inline-flex items-center gap-2 px-4 py-2 bg-emerald-500 hover:bg-emerald-400 text-gray-950 font-['Space_Mono'] font-bold text-xs transition-colors cursor-pointer shadow-[0_0_15px_rgba(16,185,129,0.25)]"
+                  >
+                    <UserPlus size={13} />
+                    Adicionar "{searchQuery || 'Novo Membro'}" à Equipe
+                  </button>
+                )}
+              </div>
             </div>
           ) : null}
         </div>
@@ -2821,6 +3113,417 @@ export default function Dashboard({ isAdmin = false, onNavigateTab }: DashboardP
                   {isSavingResponseEdit ? <Loader2 className="animate-spin" size={15} /> : <Check size={15} />}
                   Salvar Respostas do Formulário
                 </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Add New Member Modal (Accessible to Super Admin and Membro do Diretório via Filter) */}
+      {isAddMemberOpen && (
+        <div 
+          className="fixed inset-0 z-[70] flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm overflow-y-auto"
+          onClick={() => !isAddingMember && setIsAddMemberOpen(false)}
+        >
+          <div 
+            className="bg-[#121216] border border-emerald-500/40 w-full max-w-4xl max-h-[92vh] overflow-y-auto scrollbar-thin scrollbar-thumb-gray-700 shadow-2xl my-8 relative"
+            onClick={e => e.stopPropagation()}
+          >
+            {/* Modal Header */}
+            <div className="sticky top-0 bg-[#121216]/95 backdrop-blur-md border-b border-gray-800 p-6 flex items-start justify-between z-10">
+              <div className="flex items-start gap-3.5">
+                <div className="w-10 h-10 rounded bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400 shrink-0 mt-0.5">
+                  <UserPlus size={20} />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2 flex-wrap mb-1">
+                    <h2 className="text-xl font-bold text-white font-['Syne'] uppercase tracking-tight">
+                      Cadastrar Novo Membro da Equipe
+                    </h2>
+                    <span className="px-2 py-0.5 bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 text-[10px] font-['Space_Mono'] uppercase tracking-wider font-bold">
+                      {isSuperAdmin ? 'Super Admin' : 'Membro do Diretório'}
+                    </span>
+                  </div>
+                  <p className="text-xs text-gray-400 font-['Space_Mono']">
+                    Preencha os dados cadastrais para adicionar o membro diretamente à base do Diretório e atualizar o Dashboard.
+                  </p>
+                </div>
+              </div>
+              <button 
+                type="button"
+                onClick={() => !isAddingMember && setIsAddMemberOpen(false)} 
+                className="p-1.5 text-gray-400 hover:text-white hover:bg-gray-800 transition-colors cursor-pointer"
+                title="Fechar"
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            {/* Modal Form */}
+            <form onSubmit={handleSaveNewMember} className="p-6 space-y-6">
+              {/* Contexto do Filtro */}
+              {(searchQuery.trim() || roleFilter !== 'all' || projectStatusFilter !== 'all') && (
+                <div className="p-3 bg-emerald-950/30 border border-emerald-500/30 text-xs font-['Space_Mono'] flex items-center justify-between flex-wrap gap-2 text-emerald-300">
+                  <span className="flex items-center gap-1.5">
+                    <Filter size={13} className="text-emerald-400" />
+                    <span>Critérios do filtro atual preenchidos automaticamente no formulário:</span>
+                  </span>
+                  <div className="flex items-center gap-1.5 flex-wrap text-[11px]">
+                    {searchQuery && <span className="bg-emerald-500/20 px-1.5 py-0.5 border border-emerald-500/30">Busca: {searchQuery}</span>}
+                    {roleFilter !== 'all' && <span className="bg-emerald-500/20 px-1.5 py-0.5 border border-emerald-500/30">Função: {roleFilter}</span>}
+                    {projectStatusFilter !== 'all' && (
+                      <span className="bg-emerald-500/20 px-1.5 py-0.5 border border-emerald-500/30">
+                        {projectStatusFilter.startsWith('project:') ? projectStatusFilter.replace('project:', '') : projectStatusFilter}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                {/* Coluna 1: Identificação & Dados Acadêmicos */}
+                <div className="space-y-4">
+                  <div className="pb-2 border-b border-gray-800">
+                    <h3 className="text-xs font-bold uppercase tracking-wider text-emerald-400 font-['Space_Mono'] flex items-center gap-1.5">
+                      <span>1. Identificação & Contato</span>
+                    </h3>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-gray-300 uppercase font-['Space_Mono'] mb-1.5">
+                      Nome Completo <span className="text-red-400">*</span>
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      placeholder="Ex: Beatriz Albuquerque Silva"
+                      value={newMemberForm.name}
+                      onChange={e => setNewMemberForm({ ...newMemberForm, name: e.target.value })}
+                      className="w-full bg-gray-950 border border-gray-800 focus:border-emerald-500 text-white p-2.5 text-xs outline-none font-sans"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-gray-300 uppercase font-['Space_Mono'] mb-1.5">
+                      E-mail Institucional ou Principal <span className="text-red-400">*</span>
+                    </label>
+                    <input
+                      type="email"
+                      required
+                      placeholder="Ex: beatriz.silva@ufpe.br"
+                      value={newMemberForm.email}
+                      onChange={e => setNewMemberForm({ ...newMemberForm, email: e.target.value })}
+                      className="w-full bg-gray-950 border border-gray-800 focus:border-emerald-500 text-white p-2.5 text-xs outline-none font-['Space_Mono']"
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-xs font-bold text-gray-300 uppercase font-['Space_Mono'] mb-1.5">
+                        Usuário do Discord
+                      </label>
+                      <input
+                        type="text"
+                        placeholder="Ex: beatriz#1234"
+                        value={newMemberForm.discordUser}
+                        onChange={e => setNewMemberForm({ ...newMemberForm, discordUser: e.target.value })}
+                        className="w-full bg-gray-950 border border-gray-800 focus:border-emerald-500 text-white p-2.5 text-xs outline-none font-['Space_Mono']"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-bold text-gray-300 uppercase font-['Space_Mono'] mb-1.5">
+                        Data de Nascimento
+                      </label>
+                      <input
+                        type="date"
+                        value={newMemberForm.birthday}
+                        onChange={e => setNewMemberForm({ ...newMemberForm, birthday: e.target.value })}
+                        className="w-full bg-gray-950 border border-gray-800 focus:border-emerald-500 text-white p-2.5 text-xs outline-none font-['Space_Mono']"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="pb-2 pt-3 border-b border-gray-800">
+                    <h3 className="text-xs font-bold uppercase tracking-wider text-emerald-400 font-['Space_Mono'] flex items-center gap-1.5">
+                      <span>2. Dados Acadêmicos</span>
+                    </h3>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-xs font-bold text-gray-300 uppercase font-['Space_Mono'] mb-1.5">
+                        Curso de Graduação <span className="text-red-400">*</span>
+                      </label>
+                      <input
+                        type="text"
+                        required
+                        list="courses-list"
+                        placeholder="Ex: Ciência da Computação"
+                        value={newMemberForm.course}
+                        onChange={e => setNewMemberForm({ ...newMemberForm, course: e.target.value })}
+                        className="w-full bg-gray-950 border border-gray-800 focus:border-emerald-500 text-white p-2.5 text-xs outline-none"
+                      />
+                      <datalist id="courses-list">
+                        <option value="Ciência da Computação" />
+                        <option value="Design" />
+                        <option value="Engenharia da Computação" />
+                        <option value="Sistemas de Informação" />
+                        <option value="Cinema e Audiovisual" />
+                        <option value="Música" />
+                        <option value="Administração" />
+                        <option value="Outro" />
+                      </datalist>
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-bold text-gray-300 uppercase font-['Space_Mono'] mb-1.5">
+                        Período Atual
+                      </label>
+                      <select
+                        value={newMemberForm.period}
+                        onChange={e => setNewMemberForm({ ...newMemberForm, period: e.target.value })}
+                        className="w-full bg-gray-950 border border-gray-800 focus:border-emerald-500 text-white p-2.5 text-xs outline-none cursor-pointer font-['Space_Mono']"
+                      >
+                        <option value="1º período">1º período</option>
+                        <option value="2º período">2º período</option>
+                        <option value="3º período">3º período</option>
+                        <option value="4º período">4º período</option>
+                        <option value="5º período">5º período</option>
+                        <option value="6º período">6º período</option>
+                        <option value="7º período">7º período</option>
+                        <option value="8º período">8º período</option>
+                        <option value="9º período">9º período</option>
+                        <option value="10º período">10º período</option>
+                        <option value="Pós-Graduação">Pós-Graduação</option>
+                        <option value="Graduado">Graduado</option>
+                      </select>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Coluna 2: Atuação na LAJE & Alocação */}
+                <div className="space-y-4">
+                  <div className="pb-2 border-b border-gray-800">
+                    <h3 className="text-xs font-bold uppercase tracking-wider text-emerald-400 font-['Space_Mono'] flex items-center gap-1.5">
+                      <span>3. Atuação na Liga LAJE</span>
+                    </h3>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-gray-300 uppercase font-['Space_Mono'] mb-1.5">
+                      Função(ões) / Área(s) na Liga <span className="text-red-400">*</span>
+                    </label>
+                    <div className="flex flex-wrap gap-1.5 mb-2">
+                      {['Programação', 'Arte', 'Game Design', 'Som', 'Produção', 'Marketing', 'RH'].map(r => {
+                        const currentRoles = (newMemberForm.leagueRole || '').split(',').map(s => s.trim()).filter(Boolean);
+                        const isSelected = currentRoles.includes(r);
+                        return (
+                          <button
+                            key={r}
+                            type="button"
+                            onClick={() => {
+                              let next: string[];
+                              if (isSelected) {
+                                next = currentRoles.filter(role => role !== r);
+                              } else {
+                                next = [...currentRoles, r];
+                              }
+                              setNewMemberForm({
+                                ...newMemberForm,
+                                leagueRole: next.join(', ') || r
+                              });
+                            }}
+                            className={`px-2.5 py-1 text-xs font-['Space_Mono'] border transition-colors cursor-pointer ${
+                              isSelected
+                                ? 'bg-emerald-500 text-gray-950 font-bold border-emerald-400'
+                                : 'bg-gray-900 border-gray-700 text-gray-300 hover:border-gray-500'
+                            }`}
+                          >
+                            {isSelected ? `✓ ${r}` : `+ ${r}`}
+                          </button>
+                        );
+                      })}
+                    </div>
+                    <input
+                      type="text"
+                      required
+                      placeholder="Ex: Programação, Arte"
+                      value={newMemberForm.leagueRole}
+                      onChange={e => setNewMemberForm({ ...newMemberForm, leagueRole: e.target.value })}
+                      className="w-full bg-gray-950 border border-gray-800 focus:border-emerald-500 text-white p-2.5 text-xs outline-none font-['Space_Mono']"
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-3 gap-3">
+                    <div>
+                      <label className="block text-[11px] font-bold text-gray-300 uppercase font-['Space_Mono'] mb-1.5">
+                        Dedicação
+                      </label>
+                      <select
+                        value={newMemberForm.weeklyHours}
+                        onChange={e => setNewMemberForm({ ...newMemberForm, weeklyHours: e.target.value })}
+                        className="w-full bg-gray-950 border border-gray-800 focus:border-emerald-500 text-white p-2.5 text-xs outline-none font-['Space_Mono']"
+                      >
+                        <option value="2h">2h</option>
+                        <option value="4h">4h</option>
+                        <option value="6h">6h</option>
+                        <option value="8h">8h</option>
+                        <option value="10h+">10h+</option>
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block text-[11px] font-bold text-gray-300 uppercase font-['Space_Mono'] mb-1.5">
+                        Prioridade
+                      </label>
+                      <select
+                        value={newMemberForm.priority}
+                        onChange={e => setNewMemberForm({ ...newMemberForm, priority: e.target.value })}
+                        className="w-full bg-gray-950 border border-gray-800 focus:border-emerald-500 text-white p-2.5 text-xs outline-none font-['Space_Mono']"
+                      >
+                        <option value="Baixa">Baixa</option>
+                        <option value="Média">Média</option>
+                        <option value="Alta">Alta</option>
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block text-[11px] font-bold text-gray-300 uppercase font-['Space_Mono'] mb-1.5">
+                        Status
+                      </label>
+                      <select
+                        value={newMemberForm.status}
+                        onChange={e => setNewMemberForm({ ...newMemberForm, status: e.target.value as any })}
+                        className="w-full bg-gray-950 border border-gray-800 focus:border-emerald-500 text-white p-2.5 text-xs outline-none font-['Space_Mono']"
+                      >
+                        <option value="Ativo">Ativo</option>
+                        <option value="Ex-membro">Ex-membro</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <div className="pb-2 pt-3 border-b border-gray-800">
+                    <h3 className="text-xs font-bold uppercase tracking-wider text-emerald-400 font-['Space_Mono'] flex items-center gap-1.5">
+                      <span>4. Alocação em Projetos</span>
+                    </h3>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-xs font-bold text-gray-300 uppercase font-['Space_Mono'] mb-1.5">
+                        Alocado em Projeto?
+                      </label>
+                      <select
+                        value={newMemberForm.isInProject}
+                        onChange={e => setNewMemberForm({ ...newMemberForm, isInProject: e.target.value })}
+                        className="w-full bg-gray-950 border border-gray-800 focus:border-emerald-500 text-white p-2.5 text-xs outline-none font-['Space_Mono']"
+                      >
+                        <option value="Sim">Sim, alocado</option>
+                        <option value="Não">Não alocado</option>
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-bold text-gray-300 uppercase font-['Space_Mono'] mb-1.5">
+                        {newMemberForm.isInProject === 'Sim' ? 'Projeto(s) Atual(is)' : 'Situação sem Projeto'}
+                      </label>
+                      {newMemberForm.isInProject === 'Sim' ? (
+                        <>
+                          <input
+                            type="text"
+                            list="active-projects-list"
+                            placeholder="Ex: Chrono Echoes, Pixel Quest"
+                            value={newMemberForm.currentProjects}
+                            onChange={e => setNewMemberForm({ ...newMemberForm, currentProjects: e.target.value })}
+                            className="w-full bg-gray-950 border border-gray-800 focus:border-emerald-500 text-white p-2.5 text-xs outline-none"
+                          />
+                          <datalist id="active-projects-list">
+                            {distinctProjects.map(p => (
+                              <option key={p} value={p} />
+                            ))}
+                          </datalist>
+                        </>
+                      ) : (
+                        <select
+                          value={newMemberForm.notInProjectStatus}
+                          onChange={e => setNewMemberForm({ ...newMemberForm, notInProjectStatus: e.target.value })}
+                          className="w-full bg-gray-950 border border-gray-800 focus:border-emerald-500 text-white p-2.5 text-xs outline-none"
+                        >
+                          <option value="Quero entrar em um projeto e estou procurando">Quero entrar em um projeto e estou procurando</option>
+                          <option value="Já tentei entrar em um projeto, mas não consegui">Já tentei entrar em um projeto, mas não consegui</option>
+                          <option value="Só quero acompanhar por curiosidade ou aprendizado">Só quero acompanhar por curiosidade ou aprendizado</option>
+                        </select>
+                      )}
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-gray-300 uppercase font-['Space_Mono'] mb-1.5">
+                      Projetos de Interesse (Opcional)
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="Ex: Projetos 2D, Roguelike, Unity, Unreal"
+                      value={newMemberForm.interestedProjects}
+                      onChange={e => setNewMemberForm({ ...newMemberForm, interestedProjects: e.target.value })}
+                      className="w-full bg-gray-950 border border-gray-800 focus:border-emerald-500 text-white p-2.5 text-xs outline-none"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* Foco e Aprendizado */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2 border-t border-gray-800">
+                <div>
+                  <label className="block text-xs font-bold text-gray-300 uppercase font-['Space_Mono'] mb-1.5">
+                    Foco na Função Atual
+                  </label>
+                  <textarea
+                    rows={2}
+                    placeholder="Descreva as principais responsabilidades ou tarefas que este membro irá assumir..."
+                    value={newMemberForm.roleFocus}
+                    onChange={e => setNewMemberForm({ ...newMemberForm, roleFocus: e.target.value })}
+                    className="w-full bg-gray-950 border border-gray-800 focus:border-emerald-500 text-white p-2.5 text-xs outline-none resize-none"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-gray-300 uppercase font-['Space_Mono'] mb-1.5">
+                    Foco de Aprendizado
+                  </label>
+                  <textarea
+                    rows={2}
+                    placeholder="Ferramentas, linguagens ou habilidades que o membro deseja aprimorar..."
+                    value={newMemberForm.learningFocus}
+                    onChange={e => setNewMemberForm({ ...newMemberForm, learningFocus: e.target.value })}
+                    className="w-full bg-gray-950 border border-gray-800 focus:border-emerald-500 text-white p-2.5 text-xs outline-none resize-none"
+                  />
+                </div>
+              </div>
+
+              {/* Modal Footer */}
+              <div className="flex items-center justify-between pt-4 border-t border-gray-800 gap-3">
+                <span className="text-[11px] text-gray-500 font-['Space_Mono'] hidden sm:inline">
+                  Campos com <span className="text-red-400">*</span> são obrigatórios.
+                </span>
+                <div className="flex items-center gap-3 ml-auto">
+                  <button
+                    type="button"
+                    disabled={isAddingMember}
+                    onClick={() => setIsAddMemberOpen(false)}
+                    className="px-5 py-2.5 bg-gray-800 hover:bg-gray-700 text-gray-300 font-medium text-xs uppercase tracking-wider font-['Space_Mono'] transition-colors cursor-pointer"
+                  >
+                    Cancelar
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={isAddingMember}
+                    className="flex items-center gap-2 px-6 py-2.5 bg-emerald-500 hover:bg-emerald-400 text-gray-950 font-bold text-xs uppercase tracking-wider font-['Space_Mono'] transition-colors cursor-pointer disabled:opacity-50 shadow-[0_0_20px_rgba(16,185,129,0.3)]"
+                  >
+                    {isAddingMember ? <Loader2 className="animate-spin" size={15} /> : <UserPlus size={15} />}
+                    Cadastrar Membro na Equipe
+                  </button>
+                </div>
               </div>
             </form>
           </div>

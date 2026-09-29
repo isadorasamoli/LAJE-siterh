@@ -1,3 +1,5 @@
+export const SUPER_ADMIN_EMAIL = 'isadora.mlima@ufpe.br';
+
 export const fetchUpcomingEvents = async (accessToken: string) => {
   try {
     const timeMin = new Date().toISOString();
@@ -37,20 +39,41 @@ const formatEventHtml = (event: any, includeCalendarLink = true) => {
   </li>`;
 };
 
-const sendGmailMessage = async (accessToken: string, headers: string[], html: string) => {
-  if (!accessToken) {
-    throw new Error('Access token not provided');
+const toBase64Url = (str: string): string => {
+  const bytes = new TextEncoder().encode(str);
+  let binary = '';
+  for (let i = 0; i < bytes.length; i++) {
+    binary += String.fromCharCode(bytes[i]);
   }
-  const emailContent = [
-    'Content-Type: text/html; charset="UTF-8"\n',
-    'MIME-Version: 1.0\n',
-    ...headers.map(header => `${header}\n`),
-    `\n${html}`
-  ].join('');
-  const base64EncodedEmail = btoa(unescape(encodeURIComponent(emailContent)))
+  return btoa(binary)
     .replace(/\+/g, '-')
     .replace(/\//g, '_')
     .replace(/=+$/, '');
+};
+
+const sendGmailMessage = async (accessToken: string, headers: string[], html: string) => {
+  if (!accessToken) {
+    throw new Error('Access token não fornecido. Autorize a conta Google para envio via Gmail.');
+  }
+
+  // Ensure From and MIME headers are always present
+  const baseHeaders = [
+    'From: me',
+    'MIME-Version: 1.0',
+    'Content-Type: text/html; charset="UTF-8"'
+  ];
+
+  // Merge headers, avoiding duplicates
+  const finalHeaders = [...baseHeaders];
+  for (const h of headers) {
+    const key = h.split(':')[0].trim().toLowerCase();
+    if (!baseHeaders.some(bh => bh.toLowerCase().startsWith(key + ':'))) {
+      finalHeaders.push(h);
+    }
+  }
+
+  const rawMessage = finalHeaders.join('\r\n') + '\r\n\r\n' + html;
+  const base64EncodedEmail = toBase64Url(rawMessage);
 
   const response = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
     method: 'POST',
@@ -60,10 +83,14 @@ const sendGmailMessage = async (accessToken: string, headers: string[], html: st
     },
     body: JSON.stringify({ raw: base64EncodedEmail })
   });
+
   if (!response.ok) {
     const errorBody = await response.text();
+    console.error(`Gmail API returned status ${response.status}:`, errorBody);
     throw new Error(`Gmail API error (${response.status}): ${errorBody}`);
   }
+
+  return await response.json();
 };
 
 export const createProjectMailtoLink = (
@@ -78,12 +105,16 @@ export const createProjectMailtoLink = (
     semester?: string;
   }
 ) => {
-  const bcc = emails.filter(e => e && e.includes('@')).join(',');
+  const uniqueEmails = Array.from(new Set([
+    ...emails.filter(e => e && e.includes('@')),
+    SUPER_ADMIN_EMAIL
+  ]));
+  const bcc = uniqueEmails.join(',');
   const emoji = project.coverEmoji || '🎮';
   const subject = encodeURIComponent(`[LAJE] Novo Projeto Cadastrado: ${project.name} ${emoji}`);
   const body = encodeURIComponent(
     `Olá membros da LAJE!\n\n` +
-    `Um novo projeto foi adicionado ao mural de Projetos & Vagas:\n\n` +
+    `Um novo projeto foi adicionado ao mural de Projetos & Oportunidades:\n\n` +
     `🎮 Projeto: ${project.name}\n` +
     `🕹️ Gênero: ${project.genre}\n` +
     `⚙️ Engine: ${project.engine}\n` +
@@ -93,11 +124,71 @@ export const createProjectMailtoLink = (
     `Acesse o portal da LAJE para ver a ficha completa, candidatar-se às vagas abertas ou pegar microtarefas!\n\n` +
     `— Liga Acadêmica de Jogos Eletrônicos (LAJE)`
   );
-  return `mailto:?bcc=${encodeURIComponent(bcc)}&subject=${subject}&body=${body}`;
+  return `mailto:${SUPER_ADMIN_EMAIL}?bcc=${encodeURIComponent(bcc)}&subject=${subject}&body=${body}`;
+};
+
+export const createGmailWebComposeLink = (
+  emails: string[],
+  project: {
+    name: string;
+    genre: string;
+    engine: string;
+    leader: string;
+    description: string;
+    coverEmoji?: string;
+    semester?: string;
+  }
+) => {
+  const uniqueEmails = Array.from(new Set([
+    ...emails.filter(e => e && e.includes('@')),
+    SUPER_ADMIN_EMAIL
+  ]));
+  const bcc = uniqueEmails.join(',');
+  const emoji = project.coverEmoji || '🎮';
+  const subject = encodeURIComponent(`[LAJE] Novo Projeto Cadastrado: ${project.name} ${emoji}`);
+  const body = encodeURIComponent(
+    `Olá membros da LAJE!\n\n` +
+    `Um novo projeto foi adicionado ao mural de Projetos & Oportunidades:\n\n` +
+    `🎮 Projeto: ${project.name}\n` +
+    `🕹️ Gênero: ${project.genre}\n` +
+    `⚙️ Engine: ${project.engine}\n` +
+    `👤 Líder: ${project.leader}\n` +
+    `📅 Semestre: ${project.semester || '2026.2'}\n\n` +
+    `Descrição:\n${project.description}\n\n` +
+    `Acesse o portal da LAJE para ver a ficha completa, candidatar-se às vagas abertas ou pegar microtarefas!\n\n` +
+    `— Liga Acadêmica de Jogos Eletrônicos (LAJE)`
+  );
+  return `https://mail.google.com/mail/?view=cm&fs=1&to=${encodeURIComponent(SUPER_ADMIN_EMAIL)}&bcc=${encodeURIComponent(bcc)}&su=${subject}&body=${body}`;
+};
+
+export const createEventGmailLink = (
+  emails: string[],
+  event: any,
+  type: 'create' | 'update' | 'delete'
+) => {
+  const uniqueEmails = Array.from(new Set([
+    ...emails.filter(e => e && e.includes('@')),
+    SUPER_ADMIN_EMAIL
+  ]));
+  const bcc = uniqueEmails.join(',');
+  const actionText = type === 'create' ? 'Novo Evento' : type === 'update' ? 'Atualização de Evento' : 'Evento Cancelado';
+  const subject = encodeURIComponent(`[LAJE] ${actionText}: ${event.title}`);
+  const dateStr = new Date(event.date).toLocaleString('pt-BR');
+  const body = encodeURIComponent(
+    `Olá membros da LAJE!\n\n` +
+    `${type === 'create' ? 'Um novo evento foi agendado' : type === 'update' ? 'Um evento foi atualizado' : 'Um evento foi cancelado'} no calendário oficial:\n\n` +
+    `📅 Evento: ${event.title}\n` +
+    `⏰ Data e Horário: ${dateStr}\n` +
+    `⏳ Duração: ${event.duration || '1 hora'}\n` +
+    `📝 Descrição: ${event.description || 'Sem descrição adicional'}\n\n` +
+    `Acesse o portal da LAJE para mais informações e sincronizar com seu Google Agenda!\n\n` +
+    `— Liga Acadêmica de Jogos Eletrônicos (LAJE)`
+  );
+  return `https://mail.google.com/mail/?view=cm&fs=1&to=${encodeURIComponent(SUPER_ADMIN_EMAIL)}&bcc=${encodeURIComponent(bcc)}&su=${subject}&body=${body}`;
 };
 
 export const sendWelcomeEmail = async (accessToken: string, toEmail: string, name: string, events: any[]) => {
-  if (!accessToken || !toEmail) return false;
+  if (!toEmail) return false;
   try {
     const eventsHtml = events.length > 0 
       ? `<ul>${events.map(event => formatEventHtml(event)).join('')}</ul>`
@@ -105,12 +196,18 @@ export const sendWelcomeEmail = async (accessToken: string, toEmail: string, nam
 
     const emailHtml = `<div style="font-family: sans-serif; color: #e5e7eb; background-color: #030712; padding: 24px; border: 1px solid #1f2937; border-radius: 8px;">
         <h1 style="color: #10b981;">Bem-vindo(a), ${escapeHtml(name)}!</h1>
-        <p>Você realizou seu primeiro login no portal. Aqui estão os próximos eventos agendados:</p>
+        <p>Você realizou seu primeiro login no portal da LAJE. Aqui estão os próximos eventos agendados:</p>
         ${eventsHtml}
         <p style="margin-top: 20px; color: #6b7280; font-size: 12px;">Este é um e-mail automático do sistema LAJE HR.</p>
       </div>`;
 
-    await sendGmailMessage(accessToken, [`To: ${toEmail}`, 'Subject: Bem-vindo ao Calendário da LAJE!'], emailHtml);
+    const headers = [
+      `To: ${toEmail}`,
+      toEmail.toLowerCase() !== SUPER_ADMIN_EMAIL.toLowerCase() ? `Cc: ${SUPER_ADMIN_EMAIL}` : '',
+      'Subject: [LAJE] Bem-vindo ao Portal da LAJE!'
+    ].filter(Boolean);
+
+    await sendGmailMessage(accessToken, headers, emailHtml);
     return true;
   } catch (error) {
     console.info('Welcome email could not be sent directly via Gmail:', error);
@@ -124,7 +221,13 @@ export const sendEventNotification = async (
   event: any,
   type: 'create' | 'update' | 'delete'
 ) => {
-  if (!accessToken || !emails.length) return false;
+  const allEmails = Array.from(new Set([
+    ...emails.map(e => e.trim().toLowerCase()).filter(e => e && e.includes('@')),
+    SUPER_ADMIN_EMAIL.toLowerCase()
+  ]));
+
+  if (!allEmails.length) return false;
+
   const isDelete = type === 'delete';
   const subject = type === 'create' ? 'Novo Evento' : type === 'update' ? 'Atualização de Evento' : 'Evento Cancelado';
   const heading = type === 'create' ? 'Novo evento cadastrado' : type === 'update' ? 'Evento atualizado' : 'Evento cancelado';
@@ -142,7 +245,15 @@ export const sendEventNotification = async (
   </div>`;
 
   try {
-    await sendGmailMessage(accessToken, [`Bcc: ${emails.join(',')}`, `Subject: ${subject}: ${event.title}`], html);
+    await sendGmailMessage(
+      accessToken,
+      [
+        `To: ${SUPER_ADMIN_EMAIL}`,
+        `Bcc: ${allEmails.join(',')}`,
+        `Subject: [LAJE] ${subject}: ${event.title}`
+      ],
+      html
+    );
     return true;
   } catch (err) {
     console.info('Event notification email could not be sent via Gmail:', err);
@@ -167,18 +278,17 @@ export const sendNewProjectNotification = async (
     coverEmoji?: string;
   }
 ): Promise<{ success: boolean; sentCount: number }> => {
-  if (!accessToken || !emails.length) return { success: false, sentCount: 0 };
-
-  const uniqueEmails = Array.from(new Set(
-    emails
+  const uniqueEmails = Array.from(new Set([
+    ...emails
       .map(e => e.trim().toLowerCase())
-      .filter(e => e && e.includes('@'))
-  ));
+      .filter(e => e && e.includes('@')),
+    SUPER_ADMIN_EMAIL.toLowerCase()
+  ]));
 
   if (!uniqueEmails.length) return { success: false, sentCount: 0 };
 
   const emoji = project.coverEmoji || '🎮';
-  const subject = `Novo Projeto na LAJE: ${project.name} ${emoji}`;
+  const subject = `[LAJE] Novo Projeto: ${project.name} ${emoji}`;
 
   const html = `
     <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; color: #e5e7eb; background-color: #0b0f19; padding: 32px 24px; border: 1px solid #1f2937; border-radius: 8px; max-width: 600px; margin: 0 auto;">
@@ -211,7 +321,7 @@ export const sendNewProjectNotification = async (
       </div>
 
       <p style="font-size: 13px; color: #d1d5db; line-height: 1.5; margin-bottom: 24px;">
-        Acesse o portal da LAJE na aba <strong>Projetos & Vagas</strong> para ver a ficha completa do jogo, candidatar-se às vagas abertas ou pegar microtarefas pontuais no mural!
+        Acesse o portal da LAJE na aba <strong>Projetos & Oportunidades</strong> para conferir a ficha completa do jogo, candidatar-se às vagas abertas ou pegar microtarefas pontuais no mural!
       </p>
 
       <div style="border-top: 1px solid #1f2937; padding-top: 16px; text-align: center; color: #6b7280; font-size: 11px;">
@@ -227,12 +337,17 @@ export const sendNewProjectNotification = async (
     try {
       await sendGmailMessage(
         accessToken,
-        [`Bcc: ${batch.join(',')}`, `Subject: ${subject}`],
+        [
+          `To: ${SUPER_ADMIN_EMAIL}`,
+          `Bcc: ${batch.join(',')}`,
+          `Subject: ${subject}`
+        ],
         html
       );
       sent += batch.length;
     } catch (err) {
-      console.info('Envio por Gmail API não autorizado para a conta atual:', err);
+      console.error('Envio por Gmail API falhou para o lote:', err);
+      throw err;
     }
   }
   return { success: sent > 0, sentCount: sent };
