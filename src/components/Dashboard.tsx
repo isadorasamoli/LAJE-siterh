@@ -1253,6 +1253,7 @@ export default function Dashboard({
       setIsSavingResponseEdit(true);
       const updatePayload = {
         name: editingFormData.name.trim(),
+        email: editingFormData.email?.trim().toLowerCase() || '',
         birthday: editingFormData.birthday || '',
         discordUser: (editingFormData.discordUser || '').replace(/^@+/, '').trim(),
         course: editingFormData.course || '',
@@ -3308,6 +3309,16 @@ export default function Dashboard({
                       required
                       value={editingFormData.name || ''}
                       onChange={(e) => setEditingFormData({ ...editingFormData, name: e.target.value })}
+                      className="w-full bg-gray-900/80 border border-gray-700 focus:border-blue-500 text-white p-2.5 text-xs outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[11px] font-semibold uppercase text-gray-400 block mb-1">E-mail</label>
+                    <input
+                      type="email"
+                      required
+                      value={editingFormData.email || ''}
+                      onChange={(e) => setEditingFormData({ ...editingFormData, email: e.target.value })}
                       className="w-full bg-gray-900/80 border border-gray-700 focus:border-blue-500 text-white p-2.5 text-xs outline-none"
                     />
                   </div>
